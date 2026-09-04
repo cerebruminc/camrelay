@@ -1,5 +1,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
+#import <ImageIO/ImageIO.h>
+#import <notify.h>
 
 static NSString *CamRelayProbeArchitecture(void) {
 #if defined(__x86_64__)
@@ -126,12 +128,15 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
 @interface CamRelayProbeViewController : UIViewController
     <AVCaptureVideoDataOutputSampleBufferDelegate,
      AVCapturePhotoCaptureDelegate,
+     AVCapturePhotoFileDataRepresentationCustomizer,
      AVCaptureFileOutputRecordingDelegate,
      AVCaptureMetadataOutputObjectsDelegate>
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UIView *previewView;
 @property(nonatomic, strong) UIButton *photoButton;
 @property(nonatomic, strong) UIButton *recordButton;
+@property(nonatomic, strong) UISegmentedControl *cameraControl;
+@property(atomic) NSUInteger cameraIndex;
 @property(nonatomic, strong) AVCaptureSession *captureSession;
 @property(nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
 @property(nonatomic, strong) AVCapturePhotoOutput *photoOutput;
@@ -148,6 +153,7 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
 @property(nonatomic) BOOL automaticPhotoRequested;
 @property(nonatomic) BOOL automaticRecordingStarted;
 @property(nonatomic) BOOL automaticRecordingStopped;
+- (void)handleValidationAction:(NSString *)action;
 @end
 
 @implementation CamRelayProbeViewController
@@ -156,6 +162,12 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.observedColors = [NSMutableSet set];
+
+    self.cameraControl = [[UISegmentedControl alloc] initWithItems:@[@"Front", @"Back"]];
+    self.cameraControl.translatesAutoresizingMaskIntoConstraints = NO;
+    self.cameraControl.selectedSegmentIndex = 0;
+    self.cameraControl.accessibilityIdentifier = @"camera-position";
+    [self.cameraControl addTarget:self action:@selector(changeCamera) forControlEvents:UIControlEventValueChanged];
 
     self.previewView = [[UIView alloc] initWithFrame:CGRectZero];
     self.previewView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -185,14 +197,18 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     self.recordButton.enabled = NO;
 
     [self.view addSubview:self.previewView];
+    [self.view addSubview:self.cameraControl];
     [self.view addSubview:self.statusLabel];
     [self.view addSubview:self.photoButton];
     [self.view addSubview:self.recordButton];
     [NSLayoutConstraint activateConstraints:@[
-        [self.previewView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:24],
+        [self.cameraControl.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:16],
+        [self.cameraControl.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
+        [self.cameraControl.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
+        [self.previewView.topAnchor constraintEqualToAnchor:self.cameraControl.bottomAnchor constant:16],
         [self.previewView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
         [self.previewView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
-        [self.previewView.heightAnchor constraintEqualToAnchor:self.previewView.widthAnchor multiplier:4.0 / 3.0],
+        [self.previewView.heightAnchor constraintEqualToAnchor:self.previewView.widthAnchor],
         [self.statusLabel.topAnchor constraintEqualToAnchor:self.previewView.bottomAnchor constant:24],
         [self.statusLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
         [self.statusLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
@@ -326,6 +342,58 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     [self.photoOutput capturePhotoWithSettings:settings delegate:self];
 }
 
+- (NSString *)cameraName {
+    return @[@"front", @"back"][MIN(self.cameraIndex, 1)];
+}
+
+- (void)handleValidationAction:(NSString *)action {
+    NSUInteger index = [@[@"front", @"back"] indexOfObject:action];
+    if (index != NSNotFound) {
+        self.cameraControl.selectedSegmentIndex = (NSInteger)index;
+        [self changeCamera];
+    } else if ([action isEqualToString:@"capture"] && self.photoButton.enabled) {
+        [self capturePhoto];
+    } else if ([action isEqualToString:@"record"] && self.recordButton.enabled) {
+        [self toggleRecording];
+    }
+}
+
+- (void)changeCamera {
+    self.cameraIndex = (NSUInteger)self.cameraControl.selectedSegmentIndex;
+    AVCaptureDevicePosition position = self.cameraIndex == 0 ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
+    AVCaptureDeviceInput *existing = (AVCaptureDeviceInput *)self.captureSession.inputs.firstObject;
+    if (existing.device.position != position) {
+        AVCaptureDeviceDiscoverySession *discovery = [AVCaptureDeviceDiscoverySession
+            discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
+            mediaType:AVMediaTypeVideo position:position];
+        AVCaptureDevice *device = discovery.devices.firstObject;
+        NSError *error = nil;
+        AVCaptureDeviceInput *input = device == nil ? nil : [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
+        if (input == nil) {
+            [self updateStatus:error.localizedDescription ?: @"Requested camera is unavailable"];
+            return;
+        }
+        [self.captureSession beginConfiguration];
+        if (existing != nil) { [self.captureSession removeInput:existing]; }
+        if ([self.captureSession canAddInput:input]) {
+            [self.captureSession addInput:input];
+        } else if (existing != nil) {
+            [self.captureSession addInput:existing];
+        }
+        // Exercise replacing an output as part of a normal camera reconfiguration.
+        [self.captureSession removeOutput:self.photoOutput];
+        self.photoOutput = [[AVCapturePhotoOutput alloc] init];
+        [self.captureSession addOutput:self.photoOutput];
+        [self.captureSession commitConfiguration];
+        AVCaptureInputPort *photoPort = self.photoOutput.connections.firstObject.inputPorts.firstObject;
+        BOOL connected = photoPort.input == self.captureSession.inputs.firstObject &&
+            self.captureSession.outputs.count == 4 && self.captureSession.connections.count == 5;
+        NSLog(@"[CamRelayProbe] reconfiguration connections=%lu ports=%@",
+            (unsigned long)self.captureSession.connections.count, connected ? @"valid" : @"invalid");
+    }
+    NSLog(@"[CamRelayProbe] camera=%@", self.cameraName);
+}
+
 - (void)toggleRecording {
     if (self.movieOutput.isRecording) {
         [self.movieOutput stopRecording];
@@ -369,6 +437,7 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     NSUInteger movieBytes = self.lastMovieBytes;
     NSUInteger colors = self.observedColors.count;
     NSUInteger transitions = self.colorTransitionCount;
+    double presentationTime = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
     if (count >= 5 && !self.automaticPhotoRequested) {
         self.automaticPhotoRequested = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -406,31 +475,74 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
             (unsigned long)movieBytes];
         if (count == 1 || count % 15 == 0) {
             NSLog(
-                @"[CamRelayProbe] frame=%lu size=%zux%zu colors=%lu transitions=%lu",
+                @"[CamRelayProbe] frame=%lu size=%zux%zu colors=%lu transitions=%lu camera=%@ pts=%.3f color=%@",
                 (unsigned long)count,
                 width,
                 height,
                 (unsigned long)colors,
-                (unsigned long)transitions
+                (unsigned long)transitions,
+                self.cameraName,
+                presentationTime,
+                primaryColor ?: @"other"
             );
         }
     });
+}
+
+- (NSDictionary *)replacementMetadataForPhoto:(AVCapturePhoto *)photo {
+    return @{(__bridge NSString *)kCGImagePropertyExifDictionary:
+        @{(__bridge NSString *)kCGImagePropertyExifUserComment: @"capture-validation"}};
 }
 
 - (void)captureOutput:(AVCapturePhotoOutput *)output
     didFinishProcessingPhoto:(AVCapturePhoto *)photo
     error:(NSError *)error {
     NSData *data = photo.fileDataRepresentation;
+    NSDictionary *exif = photo.metadata[(__bridge NSString *)kCGImagePropertyExifDictionary];
+    if ([exif[(__bridge NSString *)kCGImagePropertyExifPixelXDimension] intValue] != photo.resolvedSettings.photoDimensions.width ||
+        [exif[(__bridge NSString *)kCGImagePropertyExifPixelYDimension] intValue] != photo.resolvedSettings.photoDimensions.height) {
+        NSLog(@"[CamRelayProbe] photo metadata dimensions failed");
+        return;
+    }
+    NSData *customized = [photo fileDataRepresentationWithCustomizer:self];
+    CGImageSourceRef source = customized != nil
+        ? CGImageSourceCreateWithData((__bridge CFDataRef)customized, NULL) : NULL;
+    NSDictionary *properties = source != NULL
+        ? CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source, 0, NULL)) : nil;
+    if (source != NULL) { CFRelease(source); }
+    NSString *comment = properties[(__bridge NSString *)kCGImagePropertyExifDictionary]
+        [(__bridge NSString *)kCGImagePropertyExifUserComment];
+    if (![comment isEqualToString:@"capture-validation"]) {
+        NSLog(@"[CamRelayProbe] photo metadata customization failed");
+        return;
+    }
     if (error != nil || data.length == 0) {
         NSLog(@"[CamRelayProbe] photo failed: %@", error.localizedDescription ?: @"no image data");
         return;
     }
     self.photoCount += 1;
-    NSLog(@"[CamRelayProbe] photo=%lu bytes=%lu dimensions=%dx%d",
+    NSURL *fileURL = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"CamRelayProbe-photo-%lu.jpg", (unsigned long)self.photoCount]]];
+    NSError *writeError = nil;
+    if (![data writeToURL:fileURL options:NSDataWritingAtomic error:&writeError]) {
+        NSLog(@"[CamRelayProbe] photo save failed: %@", writeError.localizedDescription);
+        return;
+    }
+    UIImage *image = [UIImage imageWithData:data];
+    uint8_t pixel[4] = {0};
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(pixel, 1, 1, 8, 4, colorSpace, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    if (context != NULL && image.CGImage != NULL) {
+        CGContextDrawImage(context, CGRectMake(0, 0, 1, 1), image.CGImage);
+    }
+    if (context != NULL) { CGContextRelease(context); }
+    CGColorSpaceRelease(colorSpace);
+    NSLog(@"[CamRelayProbe] photo=%lu bytes=%lu dimensions=%dx%d camera=%@ rgb=%u,%u,%u metadata=YES file=%@",
         (unsigned long)self.photoCount,
         (unsigned long)data.length,
         photo.resolvedSettings.photoDimensions.width,
-        photo.resolvedSettings.photoDimensions.height);
+        photo.resolvedSettings.photoDimensions.height,
+        self.cameraName, pixel[0], pixel[1], pixel[2], fileURL.path);
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output
@@ -474,6 +586,7 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
 
 @interface CamRelayProbeAppDelegate : UIResponder <UIApplicationDelegate>
 @property(nonatomic, strong) UIWindow *window;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *validationTokens;
 @end
 
 @implementation CamRelayProbeAppDelegate
@@ -482,7 +595,26 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = [[CamRelayProbeViewController alloc] init];
     [self.window makeKeyAndVisible];
+    // Opt-in test controls use the same screen actions as the buttons. The
+    // validation app still discovers and captures through AVFoundation only.
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--validation-controls"]) {
+        self.validationTokens = [NSMutableArray array];
+        for (NSString *action in @[@"front", @"back", @"capture", @"record"]) {
+            NSString *name = [@"org.camrelay.probe.validation." stringByAppendingString:action];
+            int token;
+            __weak CamRelayProbeAppDelegate *weakSelf = self;
+            uint32_t status = notify_register_dispatch(name.UTF8String, &token, dispatch_get_main_queue(), ^(int value) {
+                CamRelayProbeViewController *controller = (CamRelayProbeViewController *)weakSelf.window.rootViewController;
+                [controller handleValidationAction:action];
+            });
+            if (status == NOTIFY_STATUS_OK) { [self.validationTokens addObject:@(token)]; }
+        }
+    }
     return YES;
+}
+
+- (void)dealloc {
+    for (NSNumber *token in self.validationTokens) { notify_cancel(token.intValue); }
 }
 
 @end

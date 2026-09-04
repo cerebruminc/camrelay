@@ -21,6 +21,7 @@ build_slice() {
     -dynamiclib \
     -install_name "$OUTPUT_PATH" \
     -framework Foundation \
+    -framework ImageIO \
     -framework AVFoundation \
     -framework CoreGraphics \
     -framework CoreImage \

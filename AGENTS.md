@@ -6,9 +6,11 @@ This file contains durable technical guidance for contributors and automated dev
 
 CamRelay is a CLI for supplying deterministic image or video fixtures as the camera input seen by apps running in virtual mobile devices.
 
+After building the runtime and CLI, source-build commands run from the repository root:
+
 ```sh
-camrelay path/to/fixture.mp4
-camrelay path/to/fixture.png
+.build/debug/camrelay path/to/fixture.mp4
+.build/debug/camrelay path/to/fixture.png
 ```
 
 The current platform is iOS Simulator on macOS. Shared code must remain portable so additional virtual-device backends can be supported without depending on Apple-only frameworks.
@@ -20,6 +22,9 @@ The current platform is iOS Simulator on macOS. Shared code must remain portable
 - Camera compatibility must cover common AVFoundation surfaces as a general platform capability rather than being tailored to one app or SDK.
 - The CLI must detect an unambiguous booted target, enable the relay throughout that Simulator, loop the supplied fixture, and clean up all session state when it terminates.
 - The CLI must not inspect installed apps, select bundle identifiers, or require app-specific configuration.
+- Named fixtures must switch within the running relay without restarting apps. Terminal keys and CI commands use the same controller; the app never selects fixtures or knows about the relay.
+- Keep examples and fixture names domain-neutral. Use locally generated patterns and motion to demonstrate playback and capture without prescribing an app workflow.
+- Preserve the initial camera format and continuous sample timestamps across selection, replay, pause, and resume. Failed source preparation must leave the active source intact.
 - Errors must clearly explain ambiguous Simulator selection, unsupported media, missing runtime components, and Simulator activation failures.
 - Platform-specific code must remain isolated from the portable core.
 
@@ -61,7 +66,11 @@ Depth data, audio capture, raw photos, and non-QR metadata are not currently syn
 
 ## Frame Transport
 
-Decoded BGRA frames travel from the macOS CLI to app runtimes over loopback TCP connections. Each client begins with a one-byte role: `C` establishes a control connection and receives a one-byte acknowledgement, while `F` establishes a frame connection. A frame connection then receives five big-endian `UInt32` header values: magic `CRF2`, width, height, bytes per row, and frames per second. Every fixed-size frame payload is preceded by two big-endian `UInt64` values containing its source presentation time and duration in nanoseconds. The server schedules frames against an absolute monotonic deadline and broadcasts one fixture timeline through bounded per-client writers. Writers replace queued frames when necessary so a slow or suspended app cannot block active apps, create unbounded memory growth, or slow the fixture timeline.
+Decoded BGRA frames travel from the macOS CLI to app runtimes over loopback TCP connections. Each client begins with a one-byte role: `C` establishes a lifetime connection and receives a one-byte acknowledgement, while `F` establishes a frame connection. A frame connection receives five big-endian `UInt32` header values: magic `CRF3`, width, height, bytes per row, and frames per second. Each fixed-size frame payload is preceded by three big-endian `UInt64` values: playback generation, continuous camera presentation time, and duration in nanoseconds. The runtime acknowledges a received generation with a big-endian `UInt64` on the frame connection. `--wait-for-frame` requires at least one receiver and acknowledgement from every currently connected receiver; it does not assert app capture or UI completion.
+
+The initial fixture fixes the output format. The playback engine samples each selected source at that output rate and fits its pixels without cropping. A separate source clock supports pausing and replay while camera timestamps advance. The server schedules against an absolute monotonic deadline and broadcasts through bounded per-client writers. Writers replace queued frames so a slow or suspended app cannot block active apps, create unbounded memory growth, or slow the timeline.
+
+Management commands use length-prefixed JSON over a per-user Unix socket, separate from runtime lifetime and frame connections. Session and Simulator leases prevent competing owners. Keep the control directory private, validate socket ownership, and only replace stale sockets while holding the session lease.
 
 The transport keeps fixture paths outside the app sandbox and media decoding outside the target process. Any transport replacement must preserve deterministic playback, app isolation, cleanup behavior, and portability of the core module. Measure realistic 720p and 1080p workloads before changing the transport.
 
@@ -81,6 +90,8 @@ Functional validation scenarios:
 8. Ctrl-C and SIGTERM remove the Simulator-wide activation, disconnect every client, and leave app lifecycle under Simulator control.
 9. Runtime and validation-app artifacts contain both arm64 and x86_64 Simulator slices, and each runtime slice loads in a matching app process.
 10. The Expo example discovers the synthetic cameras, starts its VisionCamera preview, and visibly renders changing video frames.
+11. Named image and video fixtures with different dimensions and frame rates switch without relaunching either example app. Use generated colors, checkerboard, and moving-shapes fixtures. Capture checks include JPEG metadata export and front/back camera reconfiguration in both directions.
+12. Replay, pause, resume, readiness, delivery acknowledgements, failed selection, and stop work through CLI commands. Paused feeds continue delivering samples; failed selection preserves the previous source.
 
 ### Validation Scope
 
@@ -105,6 +116,8 @@ Run the complete validation matrix for release candidates and changes that span 
 - Static-image and changing-video fixtures
 - Video frames, preview, photo capture, movie recording, formats, ports, and connections
 - Video color changes and at least one confirmed playback loop
+- Live fixture switching, stable camera format and timestamps, and repeated captures across camera switches
+- Named-session control, delivery timeouts, failure preservation, and terminal controls
 - Ctrl-C and SIGTERM cleanup
 - Universal-artifact architecture and code-signature checks
 - The full unit-test suite on each supported host architecture available in the development environment
@@ -113,10 +126,13 @@ If a complete matrix run is required but an entry cannot be run, report it as un
 
 ## Development Commands
 
+Build the runtime and CLI once from the repository root, then reuse the executable for subsequent commands. Rebuild after source changes. Documentation should use `.build/debug/camrelay` consistently for source builds; an installed executable can be invoked as `camrelay`.
+
 ```sh
-swift test
-swift run camrelay --help
 ./scripts/build-runtime.sh
+swift build
+.build/debug/camrelay --help
+swift test
 ./scripts/build-probe.sh
 ./scripts/generate-fixtures.sh
 cd Examples/CamRelayExpo && npm run typecheck

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import CamRelayCore
 
 struct FrameSchedule: Equatable, Sendable {
     let mediaOriginNanoseconds: UInt64
@@ -23,11 +24,11 @@ struct FrameSchedule: Equatable, Sendable {
 }
 
 final class FrameServer: @unchecked Sendable {
-    private static let protocolMagic: UInt32 = 0x4352_4632 // CRF2
+    private static let protocolMagic: UInt32 = 0x4352_4633 // CRF3
     private static let frameClientRole: UInt8 = 0x46 // F
     private static let controlClientRole: UInt8 = 0x43 // C
 
-    private let source: MediaFrameSource
+    let playback: PlaybackEngine
     private let acceptQueue = DispatchQueue(label: "org.camrelay.frameserver.accept")
     private let streamQueue = DispatchQueue(label: "org.camrelay.frameserver.stream")
     private let controlQueue = DispatchQueue(
@@ -41,11 +42,39 @@ final class FrameServer: @unchecked Sendable {
     private var frameClients: [Int32: FrameClient] = [:]
     private var controlClientSockets: Set<Int32> = []
     private var stopped = false
+    private var originUptime: UInt64 = 0
 
     private(set) var port: UInt16 = 0
 
-    init(source: MediaFrameSource) {
-        self.source = source
+    init(playback: PlaybackEngine) {
+        self.playback = playback
+    }
+
+    var elapsedTime: UInt64 {
+        stateLock.withLock {
+            originUptime == 0 ? 0 : DispatchTime.now().uptimeNanoseconds - originUptime
+        }
+    }
+
+    func receiverCounts(for generation: UInt64) -> (connected: Int, acknowledged: Int) {
+        let clients = stateLock.withLock { Array(frameClients.values) }
+        return (clients.count, clients.filter { $0.acknowledgedGeneration >= generation }.count)
+    }
+
+    func waitForFrame(generation: UInt64, timeout: Double) throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            guard !isStopped else { throw RelayError("Relay stopped while waiting for a frame.") }
+            let state = playback.snapshot(at: elapsedTime)
+            guard state.generation == generation else {
+                throw RelayError("Selection was superseded while waiting for a frame.")
+            }
+            if let error = state.error { throw RelayError(error) }
+            let counts = receiverCounts(for: generation)
+            if counts.connected > 0 && counts.acknowledged == counts.connected { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        throw RelayError("Timed out waiting for generation \(generation) to reach every connected frame receiver. The selection remains active.")
     }
 
     func start() throws {
@@ -94,6 +123,7 @@ final class FrameServer: @unchecked Sendable {
 
         listeningSocket = socketDescriptor
         port = UInt16(bigEndian: boundAddress.sin_port)
+        stateLock.withLock { originUptime = DispatchTime.now().uptimeNanoseconds }
 
         workerGroup.enter()
         acceptQueue.async { [self] in
@@ -169,6 +199,8 @@ final class FrameServer: @unchecked Sendable {
             switch role {
             case Self.frameClientRole:
                 do {
+                    receiveTimeout = timeval(tv_sec: 0, tv_usec: 0)
+                    setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout.size(ofValue: receiveTimeout)))
                     try write(headerData(), to: descriptor)
                     let client = FrameClient(
                         descriptor: descriptor,
@@ -210,51 +242,22 @@ final class FrameServer: @unchecked Sendable {
     }
 
     private func streamFrames() {
-        do {
-            try source.restart()
-            var schedule: FrameSchedule?
-            while !isStopped {
-                let frame = try source.nextFrame()
-                guard frame.data.count == source.format.frameByteCount else {
-                    throw FrameServerError.unexpectedFrameSize(
-                        frame.data.count,
-                        source.format.frameByteCount
-                    )
-                }
-                if schedule == nil {
-                    schedule = FrameSchedule(
-                        mediaOriginNanoseconds: frame.presentationTimeNanoseconds,
-                        uptimeOriginNanoseconds: DispatchTime.now().uptimeNanoseconds
-                    )
-                }
-                guard let schedule else { continue }
-                let target = schedule.targetUptimeNanoseconds(
-                    for: frame.presentationTimeNanoseconds
-                )
-                let now = DispatchTime.now().uptimeNanoseconds
-                if target > now {
-                    _ = pacingSemaphore.wait(
-                        timeout: DispatchTime(uptimeNanoseconds: target)
-                    )
-                }
-                guard !isStopped else { return }
-                let deliveryTime = DispatchTime.now().uptimeNanoseconds
-                if schedule.isExpired(
-                    presentationTimeNanoseconds: frame.presentationTimeNanoseconds,
-                    durationNanoseconds: frame.durationNanoseconds,
-                    at: deliveryTime
-                ) {
-                    continue
-                }
-                let clients = stateLock.withLock { Array(frameClients.values) }
-                for client in clients {
-                    client.offer(frame)
-                }
+        let fps = UInt64(playback.format.framesPerSecond)
+        let schedule = FrameSchedule(mediaOriginNanoseconds: 0, uptimeOriginNanoseconds: originUptime)
+        var index: UInt64 = 0
+        while !isStopped {
+            let time = index * 1_000_000_000 / fps
+            let duration = (index + 1) * 1_000_000_000 / fps - time
+            _ = pacingSemaphore.wait(timeout: DispatchTime(uptimeNanoseconds: schedule.targetUptimeNanoseconds(for: time)))
+            guard !isStopped else { return }
+            if schedule.isExpired(presentationTimeNanoseconds: time, durationNanoseconds: duration, at: DispatchTime.now().uptimeNanoseconds) {
+                index = max(index + 1, elapsedTime * fps / 1_000_000_000)
+                continue
             }
-        } catch {
-            if !isStopped {
-                FileHandle.standardError.write(Data("camrelay: frame streaming failed: \(error.localizedDescription)\n".utf8))
-            }
+            let frame = playback.frame(at: time, duration: duration)
+            let clients = stateLock.withLock { Array(frameClients.values) }
+            for client in clients { client.offer(frame) }
+            index += 1
         }
     }
 
@@ -302,10 +305,10 @@ final class FrameServer: @unchecked Sendable {
     private func headerData() -> Data {
         let values = [
             Self.protocolMagic.bigEndian,
-            UInt32(source.format.width).bigEndian,
-            UInt32(source.format.height).bigEndian,
-            UInt32(source.format.bytesPerRow).bigEndian,
-            UInt32(source.format.framesPerSecond).bigEndian,
+            UInt32(playback.format.width).bigEndian,
+            UInt32(playback.format.height).bigEndian,
+            UInt32(playback.format.bytesPerRow).bigEndian,
+            UInt32(playback.format.framesPerSecond).bigEndian,
         ]
         return values.withUnsafeBytes { Data($0) }
     }
@@ -314,7 +317,7 @@ final class FrameServer: @unchecked Sendable {
         try writeAll(data, to: descriptor)
     }
 
-    private var isStopped: Bool {
+    var isStopped: Bool {
         stateLock.withLock { stopped }
     }
 }
@@ -327,8 +330,14 @@ private final class FrameClient: @unchecked Sendable {
     private let onDisconnect: @Sendable (Int32) -> Void
     private let stateLock = NSLock()
     private let frameReady = DispatchSemaphore(value: 0)
-    private var pendingFrame: MediaFrame?
+    private var pendingFrame: PlaybackFrame?
     private var stopped = false
+    private var acknowledged: UInt64 = 0
+    private var sentGeneration: UInt64 = 0
+    private let acknowledgementQueue = DispatchQueue(label: "org.camrelay.frameserver.acknowledgements")
+    private let acknowledgementGroup = DispatchGroup()
+
+    var acknowledgedGeneration: UInt64 { stateLock.withLock { acknowledged } }
 
     init(
         descriptor: Int32,
@@ -343,13 +352,21 @@ private final class FrameClient: @unchecked Sendable {
 
     func start() {
         workerGroup.enter()
+        acknowledgementGroup.enter()
+        acknowledgementQueue.async { [self] in
+            readAcknowledgements()
+            acknowledgementGroup.leave()
+        }
         queue.async { [self] in
             sendFrames()
+            acknowledgementGroup.wait()
+            close(descriptor)
+            onDisconnect(descriptor)
             workerGroup.leave()
         }
     }
 
-    func offer(_ frame: MediaFrame) {
+    func offer(_ frame: PlaybackFrame) {
         let shouldSignal = stateLock.withLock {
             guard !stopped else { return false }
             let wasEmpty = pendingFrame == nil
@@ -377,7 +394,7 @@ private final class FrameClient: @unchecked Sendable {
     private func sendFrames() {
         while true {
             frameReady.wait()
-            let frame = stateLock.withLock { () -> MediaFrame? in
+            let frame = stateLock.withLock { () -> PlaybackFrame? in
                 guard !stopped else { return nil }
                 let frame = pendingFrame
                 pendingFrame = nil
@@ -385,14 +402,16 @@ private final class FrameClient: @unchecked Sendable {
             }
             guard let frame else { break }
             do {
+                stateLock.withLock { sentGeneration = frame.generation }
                 let frameHeader = [
-                    frame.presentationTimeNanoseconds.bigEndian,
-                    frame.durationNanoseconds.bigEndian,
+                    frame.generation.bigEndian,
+                    frame.media.presentationTimeNanoseconds.bigEndian,
+                    frame.media.durationNanoseconds.bigEndian,
                 ]
                 try frameHeader.withUnsafeBytes {
                     try writeAll(Data($0), to: descriptor)
                 }
-                try writeAll(frame.data, to: descriptor)
+                try writeAll(frame.media.data, to: descriptor)
             } catch {
                 stateLock.withLock {
                     stopped = true
@@ -402,8 +421,31 @@ private final class FrameClient: @unchecked Sendable {
             }
         }
         shutdown(descriptor, SHUT_RDWR)
-        close(descriptor)
-        onDisconnect(descriptor)
+    }
+
+    private func readAcknowledgements() {
+        while true {
+            var value: UInt64 = 0
+            let received = withUnsafeMutableBytes(of: &value) { buffer in
+                var offset = 0
+                while offset < buffer.count {
+                    let count = recv(descriptor, buffer.baseAddress!.advanced(by: offset), buffer.count - offset, 0)
+                    if count < 0 && errno == EINTR { continue }
+                    guard count > 0 else { return false }
+                    offset += count
+                }
+                return true
+            }
+            guard received else { break }
+            let generation = UInt64(bigEndian: value)
+            let valid = stateLock.withLock {
+                guard generation > 0, generation <= sentGeneration, generation >= acknowledged else { return false }
+                acknowledged = generation
+                return true
+            }
+            if !valid { break }
+        }
+        stop()
     }
 }
 
@@ -415,6 +457,7 @@ private func writeAll(_ data: Data, to descriptor: Int32) throws {
         var remaining = buffer.count
         while remaining > 0 {
             let count = Darwin.send(descriptor, pointer, remaining, 0)
+            if count < 0 && errno == EINTR { continue }
             guard count > 0 else {
                 throw FrameServerError.systemCall("send", errno)
             }

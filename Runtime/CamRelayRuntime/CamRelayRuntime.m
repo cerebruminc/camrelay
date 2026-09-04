@@ -4,6 +4,7 @@
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
+#import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
 #import <arpa/inet.h>
 #import <math.h>
@@ -1084,13 +1085,64 @@ static CMSampleBufferRef CamRelayCopySampleForVideoOutput(
     return (__bridge CVPixelBufferRef)objc_getAssociatedObject(self, CamRelayPhotoPixelBufferKey);
 }
 - (CVPixelBufferRef)previewPixelBuffer { return NULL; }
-- (NSDictionary<NSString *, id> *)metadata { return @{}; }
+- (NSDictionary *)embeddedThumbnailPhotoFormat { return nil; }
+- (AVDepthData *)depthData { return nil; }
+- (AVPortraitEffectsMatte *)portraitEffectsMatte { return nil; }
+- (AVCameraCalibrationData *)cameraCalibrationData { return nil; }
+- (AVSemanticSegmentationMatte *)semanticSegmentationMatteForType:(AVSemanticSegmentationMatteType)type {
+    return nil;
+}
+- (NSDictionary<NSString *, id> *)metadata {
+    CVPixelBufferRef pixels = self.pixelBuffer;
+    if (pixels == NULL) { return @{}; }
+    NSNumber *width = @(CVPixelBufferGetWidth(pixels));
+    NSNumber *height = @(CVPixelBufferGetHeight(pixels));
+    return @{
+        (__bridge NSString *)kCGImagePropertyPixelWidth: width,
+        (__bridge NSString *)kCGImagePropertyPixelHeight: height,
+        (__bridge NSString *)kCGImagePropertyOrientation: @1,
+        (__bridge NSString *)kCGImagePropertyExifDictionary: @{
+            (__bridge NSString *)kCGImagePropertyExifPixelXDimension: width,
+            (__bridge NSString *)kCGImagePropertyExifPixelYDimension: height,
+        },
+    };
+}
 - (AVCaptureResolvedPhotoSettings *)resolvedSettings {
     return objc_getAssociatedObject(self, CamRelayPhotoResolvedSettingsKey);
 }
 - (NSInteger)photoCount { return 1; }
 - (AVCaptureDeviceType)sourceDeviceType { return AVCaptureDeviceTypeBuiltInWideAngleCamera; }
 - (NSData *)fileDataRepresentation { return objc_getAssociatedObject(self, CamRelayPhotoDataKey); }
+- (NSData *)fileDataRepresentationWithCustomizer:(id<AVCapturePhotoFileDataRepresentationCustomizer>)customizer {
+    NSDictionary *metadata = self.metadata;
+    if ([customizer respondsToSelector:@selector(replacementMetadataForPhoto:)]) {
+        metadata = [customizer replacementMetadataForPhoto:self];
+    }
+    // Synthetic photos have no auxiliary images. Reject requested replacements
+    // that cannot be represented, rather than silently discarding client data.
+    if ([customizer respondsToSelector:@selector(replacementEmbeddedThumbnailPixelBufferWithPhotoFormat:forPhoto:)]) {
+        NSDictionary *format = nil;
+        if ([customizer replacementEmbeddedThumbnailPixelBufferWithPhotoFormat:&format forPhoto:self] != NULL) {
+            return nil;
+        }
+    }
+    if ([customizer respondsToSelector:@selector(replacementDepthDataForPhoto:)] &&
+        [customizer replacementDepthDataForPhoto:self] != nil) { return nil; }
+    if ([customizer respondsToSelector:@selector(replacementPortraitEffectsMatteForPhoto:)] &&
+        [customizer replacementPortraitEffectsMatteForPhoto:self] != nil) { return nil; }
+
+    CGImageRef image = self.CGImageRepresentation;
+    if (image == NULL) { return nil; }
+    NSMutableData *data = [NSMutableData data];
+    CGImageDestinationRef destination = CGImageDestinationCreateWithData(
+        (__bridge CFMutableDataRef)data, CFSTR("public.jpeg"), 1, NULL
+    );
+    if (destination == NULL) { return nil; }
+    CGImageDestinationAddImage(destination, image, (__bridge CFDictionaryRef)metadata);
+    BOOL success = CGImageDestinationFinalize(destination);
+    CFRelease(destination);
+    return success ? data : nil;
+}
 - (CGImageRef)CGImageRepresentation {
     CVPixelBufferRef pixelBuffer = self.pixelBuffer;
     if (pixelBuffer == NULL) {
@@ -1468,6 +1520,7 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
 @property(nonatomic) int socketDescriptor;
 @property(nonatomic) BOOL stopped;
 @property(nonatomic) int64_t frameNumber;
+@property(atomic) uint64_t generation;
 - (void)startWithSession:(AVCaptureSession *)session;
 - (void)stop;
 @end
@@ -1545,7 +1598,7 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
     size_t height = ntohl(header[2]);
     size_t bytesPerRow = ntohl(header[3]);
     int32_t framesPerSecond = (int32_t)ntohl(header[4]);
-    if (magic != 0x43524632 || width == 0 || height == 0 ||
+    if (magic != 0x43524633 || width == 0 || height == 0 ||
         width > 4096 || height > 4096 || bytesPerRow < width * 4 ||
         framesPerSecond <= 0 || framesPerSecond > 120) {
         NSLog(@"[CamRelayRuntime] rejected invalid frame stream header");
@@ -1557,14 +1610,17 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
     if (frameBytes == NULL) {
         return;
     }
+    uint64_t acknowledgedGeneration = 0;
     while (![self isStopped]) {
-        uint64_t frameHeader[2] = {0};
+        uint64_t frameHeader[3] = {0};
         if (![self readExactly:frameHeader byteCount:sizeof(frameHeader) from:descriptor]) {
             break;
         }
-        uint64_t presentationTimeNanoseconds = CFSwapInt64BigToHost(frameHeader[0]);
-        uint64_t durationNanoseconds = CFSwapInt64BigToHost(frameHeader[1]);
-        if (presentationTimeNanoseconds > INT64_MAX || durationNanoseconds == 0 ||
+        uint64_t generation = CFSwapInt64BigToHost(frameHeader[0]);
+        uint64_t presentationTimeNanoseconds = CFSwapInt64BigToHost(frameHeader[1]);
+        uint64_t durationNanoseconds = CFSwapInt64BigToHost(frameHeader[2]);
+        if (generation == 0 || generation < self.generation ||
+            presentationTimeNanoseconds > INT64_MAX || durationNanoseconds == 0 ||
             durationNanoseconds > INT64_MAX ||
             ![self readExactly:frameBytes byteCount:frameByteCount from:descriptor]) {
             NSLog(@"[CamRelayRuntime] rejected invalid frame metadata");
@@ -1583,15 +1639,31 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
             if (sampleBuffer == NULL) {
                 continue;
             }
-            [self deliverSampleBuffer:sampleBuffer];
+            BOOL changed = self.generation != generation;
+            self.generation = generation;
+            [self deliverSampleBuffer:sampleBuffer resetPreview:changed];
             CFRelease(sampleBuffer);
+            if (acknowledgedGeneration != generation) {
+                uint64_t acknowledgement = CFSwapInt64HostToBig(generation);
+                const uint8_t *bytes = (const uint8_t *)&acknowledgement;
+                size_t remaining = sizeof(acknowledgement);
+                while (remaining > 0) {
+                    ssize_t count = send(descriptor, bytes, remaining, 0);
+                    if (count < 0 && errno == EINTR) { continue; }
+                    if (count <= 0) { free(frameBytes); return; }
+                    remaining -= (size_t)count;
+                    bytes += count;
+                }
+                acknowledgedGeneration = generation;
+            }
         }
     }
     free(frameBytes);
 }
 
-- (void)deliverSampleBuffer:(CMSampleBufferRef)sampleBuffer {
+- (void)deliverSampleBuffer:(CMSampleBufferRef)sampleBuffer resetPreview:(BOOL)resetPreview {
     AVCaptureSession *session = self.session;
+    uint64_t generation = self.generation;
     if (session == nil) {
         return;
     }
@@ -1621,9 +1693,11 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
                 continue;
             }
             dispatch_async(callbackQueue, ^{
-                [delegate captureOutput:videoOutput
-                    didOutputSampleBuffer:outputSample
-                    fromConnection:connection];
+                if (self.generation == generation && ![self isStopped]) {
+                    [delegate captureOutput:videoOutput
+                        didOutputSampleBuffer:outputSample
+                        fromConnection:connection];
+                }
                 CFRelease(outputSample);
             });
         } else if ([output isKindOfClass:AVCaptureMovieFileOutput.class]) {
@@ -1642,9 +1716,11 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
             NSArray<AVMetadataObject *> *objects = CamRelayMetadataObjects(sampleBuffer);
             if (objects.count > 0) {
                 dispatch_async(callbackQueue, ^{
-                    [delegate captureOutput:metadataOutput
-                        didOutputMetadataObjects:objects
-                        fromConnection:connection];
+                    if (self.generation == generation && ![self isStopped]) {
+                        [delegate captureOutput:metadataOutput
+                            didOutputMetadataObjects:objects
+                            fromConnection:connection];
+                    }
                 });
             }
         }
@@ -1702,7 +1778,7 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
                     [CATransaction commit];
                 });
                 AVSampleBufferVideoRenderer *renderer = displayLayer.sampleBufferRenderer;
-                if (renderer.status == AVQueuedSampleBufferRenderingStatusFailed) {
+                if (resetPreview || renderer.status == AVQueuedSampleBufferRenderingStatusFailed) {
                     [renderer flush];
                 }
                 if (renderer.isReadyForMoreMediaData) {
@@ -2042,6 +2118,21 @@ static void CamRelayAddInputWithNoConnections(
 static void (*OriginalRemoveInput)(AVCaptureSession *, SEL, AVCaptureInput *);
 static void CamRelayRemoveInput(AVCaptureSession *session, SEL selector, AVCaptureInput *input) {
     if ([input isKindOfClass:CamRelaySyntheticDeviceInput.class]) {
+        NSMutableArray *connections = CamRelayMutableArray(session, CamRelaySyntheticConnectionsKey);
+        for (AVCaptureConnection *connection in connections.copy) {
+            BOOL usesInput = NO;
+            for (AVCaptureInputPort *port in connection.inputPorts) {
+                if (port.input == input) { usesInput = YES; break; }
+            }
+            if (!usesInput) { continue; }
+            if (connection.output != nil) {
+                objc_setAssociatedObject(connection.output, CamRelayOutputConnectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            if (connection.videoPreviewLayer != nil) {
+                objc_setAssociatedObject(connection.videoPreviewLayer, CamRelayPreviewConnectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            [connections removeObject:connection];
+        }
         [CamRelayMutableArray(session, CamRelaySyntheticInputsKey) removeObject:input];
         return;
     }
@@ -2709,6 +2800,14 @@ static void CamRelayRuntimeDidLoad(void) {
     if (port == NULL || !CamRelayStartControlConnection()) {
         return;
     }
+
+    // Synthetic connections own associated objects, not a native capture graph.
+    // NSObject teardown releases that state without invoking AVFoundation's
+    // destructor, which requires its private connection storage to be initialized.
+    SEL deallocSelector = sel_registerName("dealloc");
+    Method objectDeallocator = class_getInstanceMethod(NSObject.class, deallocSelector);
+    class_addMethod(CamRelaySyntheticConnection.class, deallocSelector,
+        method_getImplementation(objectDeallocator), method_getTypeEncoding(objectDeallocator));
 
     CamRelayReplaceClassMethod(
         AVCaptureDeviceDiscoverySession.class,

@@ -23,7 +23,13 @@ struct MediaFrame: Sendable {
     let durationNanoseconds: UInt64
 }
 
-final class MediaFrameSource {
+protocol FrameSource: AnyObject {
+    var format: FrameFormat { get }
+    func nextFrame() throws -> MediaFrame
+    func restart() throws
+}
+
+final class MediaFrameSource: FrameSource {
     let format: FrameFormat
 
     private enum Storage {

@@ -21,6 +21,7 @@ build_slice() {
     -target "$ARCHITECTURE-apple-ios18.0-simulator" \
     -isysroot "$SDK_PATH" \
     -framework UIKit \
+    -framework ImageIO \
     -framework AVFoundation \
     -framework CoreImage \
     -framework CoreGraphics \
