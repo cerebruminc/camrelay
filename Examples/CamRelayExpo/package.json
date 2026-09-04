@@ -1,0 +1,27 @@
+{
+  "name": "camrelay-expo-example",
+  "version": "1.0.0",
+  "private": true,
+  "main": "expo/AppEntry",
+  "scripts": {
+    "start": "expo start",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "patch-package",
+    "android": "expo run:android"
+  },
+  "dependencies": {
+    "babel-preset-expo": "~54.0.10",
+    "expo": "~54.0.35",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-vision-camera": "4.7.3"
+  },
+  "devDependencies": {
+    "@babel/core": "7.25.2",
+    "@types/react": "19.1.0",
+    "patch-package": "8.0.0",
+    "typescript": "5.8.3"
+  }
+}

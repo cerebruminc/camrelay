@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "CamRelay Expo",
+    "slug": "camrelay-expo-example",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "org.camrelay.expo",
+      "supportsTablet": false
+    },
+    "plugins": [
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Allow CamRelay Expo to display the camera feed.",
+          "enableMicrophonePermission": false,
+          "enableFrameProcessors": false
+        }
+      ]
+    ]
+  }
+}
+

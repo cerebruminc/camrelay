@@ -1,0 +1,32 @@
+diff --git a/node_modules/react-native-vision-camera/ios/Core/CameraSession+Configuration.swift b/node_modules/react-native-vision-camera/ios/Core/CameraSession+Configuration.swift
+index ecd2a94..595c10a 100644
+--- a/node_modules/react-native-vision-camera/ios/Core/CameraSession+Configuration.swift
++++ b/node_modules/react-native-vision-camera/ios/Core/CameraSession+Configuration.swift
+@@ -25,8 +25,9 @@ extension CameraSession {
+     videoDeviceInput = nil
+ 
+     #if targetEnvironment(simulator)
+-      // iOS Simulators don't have Cameras
+-      throw CameraError.device(.notAvailableOnSimulator)
++      guard AVCaptureDevice.default(for: .video) != nil else {
++        throw CameraError.device(.notAvailableOnSimulator)
++      }
+     #endif
+ 
+     guard let cameraId = configuration.cameraId else {
+diff --git a/node_modules/react-native-vision-camera/ios/Core/CameraSession.swift b/node_modules/react-native-vision-camera/ios/Core/CameraSession.swift
+index 10b0f33..c6ef371 100644
+--- a/node_modules/react-native-vision-camera/ios/Core/CameraSession.swift
++++ b/node_modules/react-native-vision-camera/ios/Core/CameraSession.swift
+@@ -214,7 +214,10 @@ final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
+       }
+ 
+       // Set up Audio Capture Session (on audio queue)
+-      if difference.audioSessionChanged {
++      let audioSessionNeedsConfiguration = config.audio != .disabled ||
++        !self.audioCaptureSession.inputs.isEmpty ||
++        !self.audioCaptureSession.outputs.isEmpty
++      if difference.audioSessionChanged && audioSessionNeedsConfiguration {
+         CameraQueues.audioQueue.async {
+           do {
+             // Lock Capture Session for configuration
