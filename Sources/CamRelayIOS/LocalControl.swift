@@ -20,30 +20,6 @@ enum ControlPaths {
     }
 }
 
-/// Lock files retain their inode after release so competing processes lock the same object.
-final class RelayLease: @unchecked Sendable {
-    private let descriptor: Int32
-
-    init(key: String) throws {
-        let path = try ControlPaths.directory() + "/\(key).lock"
-        let fd = open(path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw systemError("open relay lock") }
-        var info = stat()
-        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-              info.st_uid == getuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0 else {
-            close(fd)
-            throw RelayError("Unsafe relay lock: \(path)")
-        }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-            close(fd)
-            throw RelayError("A relay already owns \(key). Stop that relay before starting another.")
-        }
-        descriptor = fd
-    }
-
-    deinit { close(descriptor) }
-}
-
 public final class LocalControlServer: @unchecked Sendable {
     private let lease: RelayLease
     private let path: String

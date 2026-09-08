@@ -1,20 +1,23 @@
+import CamRelayAndroid
 import CamRelayCore
 import CamRelayIOS
 import Darwin
 import Foundation
 
 private let usage = """
-CamRelay supplies an image or video as an iOS Simulator camera feed.
+CamRelay supplies an image or video as a virtual mobile-device camera feed.
 
 Usage:
-  camrelay <media-file>
-  camrelay run --session <name> --fixture <name=path> [--fixture <name=path> ...]
+  camrelay [--platform ios|android] <media-file>
+  camrelay run [--platform ios|android] --session <name> --fixture <name=path> [--fixture <name=path> ...]
   camrelay select <fixture-name> [--session <name>] [--paused] [--wait-for-frame]
   camrelay replay|next|previous [--session <name>] [--paused] [--wait-for-frame]
   camrelay pause|play [--session <name>] [--wait-for-frame]
   camrelay status|wait|stop [--session <name>] [--json]
 
 Run options:
+  --platform <name>         Target ios (default) or android.
+  --avd <name>              Choose an Android Virtual Device (automatic when only one exists).
   --initial <fixture-name>   Choose the first fixture (default: first listed).
   --paused                   Hold the initial frame until play.
   --no-interactive           Disable terminal controls (automatic without a TTY).
@@ -31,6 +34,7 @@ Interactive keys: 1-9 select, n next, b previous, r replay, space pause/play, q 
 Examples:
   camrelay ./fixtures/checkerboard.png
   camrelay ./fixtures/colors.mp4
+  camrelay --platform android --avd Pixel_10 ./fixtures/checkerboard.png
   camrelay run --session demo --fixture colors=colors.mp4 --fixture pattern=checkerboard.png
   camrelay select pattern --session demo --wait-for-frame --timeout 10s
 """
@@ -59,6 +63,13 @@ struct CamRelayCommand {
     }
 
     private static func run(_ options: RelayRunOptions) async throws {
+        switch options.platform {
+        case .iOS: try await runIOS(options)
+        case .android: try runAndroid(options)
+        }
+    }
+
+    private static func runIOS(_ options: RelayRunOptions) async throws {
         // Readiness and state changes must be visible immediately in CI log pipes.
         setbuf(stdout, nil)
         let shutdown = ShutdownSignal()
@@ -82,6 +93,30 @@ struct CamRelayCommand {
             print("Use camrelay select/status/stop --session \(options.session), or Ctrl-C to stop.")
         }
         defer { terminal?.stop() }
+        shutdown.wait()
+    }
+
+    private static func runAndroid(_ options: RelayRunOptions) throws {
+        // Readiness and state changes must be visible immediately in CI log pipes.
+        setbuf(stdout, nil)
+        let shutdown = ShutdownSignal()
+        let signals = SignalHandlers(shutdown: shutdown)
+        defer { signals.stop() }
+        let endpoint = try LocalControlServer(session: options.session)
+        defer { endpoint.stop() }
+        let session = try AndroidRelay().start(options: options)
+        defer { session.stop() }
+        try endpoint.start(handler: { request in await session.handle(request) }, didStop: { shutdown.request() })
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            session.waitUntilExit()
+            if !session.stopWasRequested { shutdown.request() }
+        }
+
+        print("CamRelay session \(options.session) is ready in Android AVD \(session.device.id) (\(session.serial)).")
+        print("Apps use the fixture through standard Android camera APIs; no app changes are needed.")
+        printResponse(RelayControlResponse(status: session.status()), json: false)
+        print("Use camrelay status/stop --session \(options.session), or Ctrl-C to stop.")
         shutdown.wait()
     }
 

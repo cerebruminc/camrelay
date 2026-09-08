@@ -17,9 +17,13 @@ let package = Package(
             name: "CamRelayIOS",
             dependencies: ["CamRelayCore"]
         ),
+        .target(
+            name: "CamRelayAndroid",
+            dependencies: ["CamRelayCore"]
+        ),
         .executableTarget(
             name: "CamRelayCLI",
-            dependencies: ["CamRelayCore", "CamRelayIOS"]
+            dependencies: ["CamRelayCore", "CamRelayIOS", "CamRelayAndroid"]
         ),
         .testTarget(
             name: "CamRelayCoreTests",
@@ -28,6 +32,10 @@ let package = Package(
         .testTarget(
             name: "CamRelayIOSTests",
             dependencies: ["CamRelayIOS"]
+        ),
+        .testTarget(
+            name: "CamRelayAndroidTests",
+            dependencies: ["CamRelayAndroid"]
         ),
     ]
 )

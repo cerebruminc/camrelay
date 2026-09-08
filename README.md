@@ -1,6 +1,6 @@
 # CamRelay
 
-CamRelay supplies an image or video file as the camera feed seen by an app running in iOS Simulator.
+CamRelay supplies a media fixture as the camera feed seen by an app running in iOS Simulator or Android Emulator.
 
 After [building from source](#build-and-run-from-source), run it from the repository root:
 
@@ -8,9 +8,9 @@ After [building from source](#build-and-run-from-source), run it from the reposi
 .build/debug/camrelay ./fixtures/colors.mp4
 ```
 
-**The app under test does not need to be changed.** It continues to use standard AVFoundation camera APIs, with no CamRelay imports, SDK integration, source changes, or special build configuration.
+**The app under test does not need to be changed.** It continues to use standard platform camera APIs, with no CamRelay imports, SDK integration, source changes, or special build configuration.
 
-## Current behavior
+## iOS Simulator behavior
 
 - Accepts PNG, JPEG, HEIC, TIFF, BMP, MP4, MOV, and M4V fixtures.
 - Detects one booted iOS Simulator.
@@ -22,6 +22,21 @@ After [building from source](#build-and-run-from-source), run it from the reposi
 - Keeps the initial fixture's camera dimensions and frame rate for the session; other fixtures fit inside that frame with black padding when needed.
 - Repeats images and samples videos at the session's output rate while preserving source playback speed and loop duration.
 - Removes the Simulator-wide feed and stops the relay on Ctrl-C or SIGTERM.
+
+## Android Emulator MVP
+
+The Android backend currently accepts one image fixture and launches the selected Android Virtual Device with environment cameras enabled:
+
+```sh
+swift build
+.build/debug/camrelay --platform android --avd Pixel_10 .build/fixtures/checkerboard.png
+```
+
+If only one AVD exists, omit `--avd`. CamRelay finds the SDK through `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or the standard macOS SDK location. The selected AVD must not already be running because the environment camera mode is chosen at emulator startup.
+
+The emulator exposes front and back cameras through standard Android camera APIs. CamRelay controls it through an ephemeral, token-protected gRPC endpoint restricted to localhost. It temporarily installs the selected image in the AVD's `environment.ini`, then restores the previous file after the owned emulator exits. `camrelay status` and `camrelay stop` work with the Android session; Ctrl-C and SIGTERM also stop the emulator and restore its configuration.
+
+This first Android phase does not yet include video, multiple fixtures, live switching, pause, replay, or delivery acknowledgements. Those remain on the iOS backend until the next Android phase. Android Emulator 36.6.11 is the currently validated version.
 
 ## Build and run from source
 
@@ -247,17 +262,17 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the detailed design, including sessio
 media file
    │
    ▼
-CamRelay CLI ── Apple media decoder ── loopback broadcast
-                                               │
-                         ┌─────────────────────┴─────────────────────┐
-                         ▼                                           ▼
-             Runtime in app process A                    Runtime in app process B
-                         │                                           │
-                         └──────── Standard camera APIs ──────────────┘
+CamRelay CLI
+   ├── iOS: Apple decoder ── loopback ── injected Simulator runtime
+   └── Android: authenticated localhost control ── Emulator environment camera
+                                                        │
+                                                        ▼
+                                             Standard platform camera APIs
 ```
 
 - `CamRelayCore` owns portable fixture validation, command models, and playback-clock state.
 - `CamRelayIOS` owns Simulator selection, Simulator-wide activation, media decoding, and the local frame server.
+- `CamRelayAndroid` owns AVD selection, emulator lifecycle, environment-camera activation, and authenticated emulator control.
 - `CamRelayRuntime` is an Objective-C dynamic library built for iOS Simulator. It exposes synthetic front and back cameras and implements the common AVFoundation capture surfaces.
 - `CamRelayProbe` validates the standard AVFoundation path independently.
 - `CamRelayExpo` validates the same feed through Expo and `react-native-vision-camera`.
@@ -291,4 +306,4 @@ These capabilities are exposed by default as platform behavior. They are not sel
 - Depth data, audio capture, raw photos, and non-QR metadata types are not yet synthesized.
 - Focus, exposure, white-balance, stabilization, and zoom configuration are accepted for compatibility but do not alter fixture pixels.
 - Raw BGRA frames use a loopback TCP stream, so high-resolution throughput depends on the host Mac and should be validated with representative fixtures.
-- Additional virtual-device platforms are not yet supported.
+- Android support is currently limited to the single-image MVP documented above.

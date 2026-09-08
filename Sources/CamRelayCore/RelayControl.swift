@@ -10,12 +10,19 @@ public struct NamedFixture: Codable, Equatable, Sendable {
     }
 }
 
+public enum RelayPlatform: String, Equatable, Sendable {
+    case iOS = "ios"
+    case android
+}
+
 public struct RelayRunOptions: Equatable, Sendable {
+    public var platform: RelayPlatform = .iOS
     public var session = "default"
     public var fixtures: [NamedFixture] = []
     public var initial: String?
     public var paused = false
     public var noInteractive = false
+    public var androidAVD: String?
 
     public init() {}
 }
@@ -160,10 +167,17 @@ public enum RelayCommand: Equatable, Sendable {
             }
             switch argument {
             case "--": positionalOnly = true
+            case "--platform":
+                let rawPlatform = try value(arguments, index: &index, option: argument)
+                guard let platform = RelayPlatform(rawValue: rawPlatform) else {
+                    throw RelayError("Unknown platform: \(rawPlatform). Expected ios or android.")
+                }
+                options.platform = platform
             case "--session": options.session = try value(arguments, index: &index, option: argument)
             case "--initial": options.initial = try value(arguments, index: &index, option: argument)
             case "--paused": options.paused = true
             case "--no-interactive": options.noInteractive = true
+            case "--avd": options.androidAVD = try value(arguments, index: &index, option: argument)
             case "--fixture":
                 let specification = try value(arguments, index: &index, option: argument)
                 let parts = specification.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
@@ -177,6 +191,12 @@ public enum RelayCommand: Equatable, Sendable {
             }
         }
         try validateName(options.session, kind: "Session name")
+        if options.platform == .iOS, options.androidAVD != nil {
+            throw RelayError("--avd requires --platform android.")
+        }
+        if let avd = options.androidAVD {
+            try validateName(avd, kind: "AVD name")
+        }
         guard !options.fixtures.isEmpty else { throw RelayError("Provide at least one media path or --fixture name=path.") }
         var names: Set<String> = []
         for fixture in options.fixtures {

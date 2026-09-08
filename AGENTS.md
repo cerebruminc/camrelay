@@ -11,9 +11,10 @@ After building the runtime and CLI, source-build commands run from the repositor
 ```sh
 .build/debug/camrelay path/to/fixture.mp4
 .build/debug/camrelay path/to/fixture.png
+.build/debug/camrelay --platform android --avd Pixel_10 path/to/fixture.png
 ```
 
-The current platform is iOS Simulator on macOS. Shared code must remain portable so additional virtual-device backends can be supported without depending on Apple-only frameworks.
+The complete backend is iOS Simulator on macOS. Android Emulator has a single-image MVP that owns the selected AVD lifecycle. Shared code must remain portable without depending on Apple-only frameworks.
 
 ## Product Requirements
 
@@ -33,6 +34,7 @@ The current platform is iOS Simulator on macOS. Shared code must remain portable
 - `CamRelayCLI`: argument parsing, target detection, lifecycle, and human-readable errors.
 - `CamRelayCore`: platform-neutral models and orchestration. It must remain buildable on Linux.
 - `CamRelayIOS`: macOS-only iOS Simulator adapter and Apple media decoding.
+- `CamRelayAndroid`: Android SDK discovery, AVD lifecycle, environment-camera activation, and authenticated emulator control.
 - `CamRelayRuntime`: Objective-C runtime loaded into an iOS Simulator app to expose and deliver a synthetic camera feed.
 - `CamRelayProbe`: validation app that uses standard AVFoundation APIs and has no dependency on CamRelay.
 - `CamRelayExpo`: Expo development-build example that validates the preview through `react-native-vision-camera`.
@@ -46,6 +48,8 @@ CamRelay requires no changes to the app under test. Apps discover and consume th
 The iOS runtime is enabled in the booted Simulator's launch environment for the lifetime of the relay. The CLI does not enumerate, select, launch, or terminate individual apps. Every app process launched or relaunched while CamRelay is active inherits the runtime, and multiple apps can consume the same fixture concurrently. Apps already running when the relay starts require a relaunch because an existing process cannot inherit a changed launch environment.
 
 Ctrl-C and SIGTERM remove every relay value from the Simulator launch environment and stop the frame server. Control connections notify already-loaded runtimes that the relay ended without transferring app lifecycle ownership to the CLI. Signal handling and cleanup must remain reliable when multiple apps and worker threads are active.
+
+The Android MVP launches a stopped AVD with front and back environment cameras. It uses the emulator's ephemeral, token-protected localhost gRPC endpoint and temporarily updates the AVD's `environment.ini`. Stopping the relay shuts down only the emulator process it launched, then restores the prior file. Android apps continue to use standard camera APIs without CamRelay integration.
 
 ## Camera Compatibility
 

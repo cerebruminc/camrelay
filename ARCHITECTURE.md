@@ -1,6 +1,6 @@
 # Architecture
 
-CamRelay supplies image and video fixtures as camera input to apps running in a booted iOS Simulator. The app continues to use standard AVFoundation APIs. CamRelay does not register camera hardware with iOS. It loads a runtime into each new Simulator app process, exposes synthetic AVFoundation objects there, and backs those objects with timed frames from the macOS CLI.
+CamRelay supplies media fixtures as camera input to apps running in virtual mobile devices. The complete iOS backend loads a runtime into Simulator app processes and backs synthetic AVFoundation objects with timed frames from the macOS CLI. The Android MVP launches an AVD with the emulator's environment cameras and supplies one image through authenticated emulator control.
 
 Work is split between the macOS host and Simulator app processes:
 
@@ -18,7 +18,7 @@ Work is split between the macOS host and Simulator app processes:
 - The portable core does not depend on Apple frameworks.
 - Platform code remains separate so another virtual-device backend can be added later.
 
-## System overview
+## iOS system overview
 
 ```mermaid
 flowchart LR
@@ -77,11 +77,12 @@ The CLI owns one frame server. Each app process loads its own runtime and opens 
 | `CamRelayCore` | macOS, portable Swift | Validates fixtures and commands, defines control messages, and maps camera time to source position. |
 | `CamRelayCLI` | macOS | Parses commands, manages terminal keys and signal handling, starts the relay, and reports status or errors. |
 | `CamRelayIOS` | macOS | Finds the Simulator runtime, decodes media, runs the frame server, and controls Simulator activation. |
+| `CamRelayAndroid` | macOS | Finds the Android SDK and AVD, owns emulator startup and shutdown, and controls its environment camera. |
 | `CamRelayRuntime` | iOS Simulator app process | Exposes synthetic AVFoundation behavior and converts incoming frames into camera samples. |
 | `CamRelayProbe` | iOS Simulator app process | Exercises common AVFoundation camera surfaces without importing or linking CamRelay. |
 | `CamRelayExpo` | iOS Simulator app process | Checks the same feed through the included React Native camera example. |
 
-The Swift package declares `CamRelayCore`, `CamRelayIOS`, and `CamRelayCLI`. The runtime and validation apps are built by shell scripts because they target iOS Simulator rather than the macOS package platform.
+The Swift package declares `CamRelayCore`, `CamRelayIOS`, `CamRelayAndroid`, and `CamRelayCLI`. The runtime and validation apps are built by shell scripts because they target mobile simulators rather than the macOS package platform.
 
 ## Relay startup and shutdown
 
@@ -127,6 +128,12 @@ sequenceDiagram
 The CLI receives `SIGINT` and `SIGTERM` through dispatch signal sources. Terminal quit and the `stop` command reach the same shutdown path. `IOSRelaySession.stop()` is idempotent. It removes the Simulator launch values before stopping the frame server. This prevents later processes from inheriting an inactive runtime. Shutdown also closes the management socket and restores terminal settings.
 
 If Simulator activation fails after the server starts, `IOSRelay` stops the server before returning the error.
+
+## Android MVP lifecycle
+
+`camrelay --platform android` selects the only AVD or the one named by `--avd`. It backs up the AVD's `environment.ini`, writes the initial image, and launches the emulator with front and back environment cameras. The emulator chooses an ephemeral localhost gRPC port and generates a bearer token in its private discovery file. CamRelay reads that file, sends `setEnvironment` with the token, then waits for Android to finish booting through `adb`.
+
+The Android session owns the emulator process it starts. `stop`, Ctrl-C, and SIGTERM interrupt that process, wait for it to exit, and restore the exact previous `environment.ini` contents and permissions. If startup fails, the same cleanup runs before the error is returned. Phase 1 exposes status and stop only; media playback controls remain in the iOS relay until the Android playback phase.
 
 ## Named sessions and playback control
 
