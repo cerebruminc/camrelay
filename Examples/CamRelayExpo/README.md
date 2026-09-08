@@ -1,6 +1,6 @@
 # CamRelay Expo example
 
-This example is an Expo development build with a live camera preview, photo capture, and front/back camera switching through `react-native-vision-camera`. It has no fixture list or required capture sequence.
+This example is an Expo development build with a live camera preview, frame-processor delivery, photo capture, and front/back camera switching through `react-native-vision-camera`. It has no fixture list or required capture sequence.
 
 It cannot run in Expo Go because VisionCamera contains native code. The first run generates and builds a local iOS or Android project; later JavaScript-only changes can use the existing development build.
 
@@ -11,7 +11,7 @@ cd Examples/CamRelayExpo
 npm install
 ```
 
-The install applies `patches/react-native-vision-camera+4.7.3.patch`. On iOS, VisionCamera normally rejects every Simulator at compile time. The patch keeps that rejection when no video device exists, permits configuration when CamRelay exposes a discoverable synthetic camera, and avoids configuring the unused audio session because this example disables audio. Android uses VisionCamera without that Simulator-specific path.
+The install applies `patches/react-native-vision-camera+4.7.3.patch`. On iOS, VisionCamera normally rejects every Simulator at compile time. The patch keeps that rejection when no video device exists, permits configuration when CamRelay exposes a discoverable synthetic camera, and avoids configuring the unused audio session because this example disables audio. The example enables VisionCamera frame processors through `react-native-worklets-core`; native projects must be regenerated after changing that setting. Android uses VisionCamera without the Simulator-specific path.
 
 ## iOS build
 
@@ -77,6 +77,7 @@ Relaunch **CamRelay Expo** after the relay starts. The example must show:
 - The selected synthetic camera name.
 - `Camera: active`.
 - `Preview: active`.
+- `Frame processor: active`, with an increasing frame count and the delivered frame dimensions and pixel format.
 - Visible motion as the video fixture advances and loops.
 
 Use the on-screen button to exercise both front and back synthetic cameras. If CamRelay is not active when the app launches, the example instead explains that no camera was discovered.

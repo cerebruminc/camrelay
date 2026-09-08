@@ -16,11 +16,14 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import {
   Camera,
+  runAtTargetFps,
   type CameraRuntimeError,
   useCameraDevice,
   useCameraDevices,
   useCameraPermission,
+  useFrameProcessor,
 } from 'react-native-vision-camera'
+import { useRunOnJS, useSharedValue } from 'react-native-worklets-core'
 import { captureReducer, initialCaptureState, type CapturedPhoto } from './captureFlow'
 
 export default function App() {
@@ -44,6 +47,29 @@ function CameraExample() {
   const [isAppActive, setAppActive] = useState(AppState.currentState === 'active')
   const [permissionBusy, setPermissionBusy] = useState(false)
   const [permissionError, setPermissionError] = useState<string>()
+  const [frameProcessorReport, setFrameProcessorReport] = useState({
+    count: 0,
+    width: 0,
+    height: 0,
+    pixelFormat: '',
+  })
+  const processedFrameCount = useSharedValue(0)
+  const reportProcessedFrame = useRunOnJS((count: number, width: number, height: number, pixelFormat: string) => {
+    setFrameProcessorReport((current) => {
+      if (current.count === 0) {
+        console.info(`[CameraExample] frame processor active at ${width}x${height} (${pixelFormat})`)
+      }
+      return { count, width, height, pixelFormat }
+    })
+  }, [])
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet'
+    processedFrameCount.value += 1
+    runAtTargetFps(2, () => {
+      'worklet'
+      reportProcessedFrame(processedFrameCount.value, frame.width, frame.height, frame.pixelFormat)
+    })
+  }, [processedFrameCount, reportProcessedFrame])
   const device = useCameraDevice(position)
   const devices = useCameraDevices()
   const { hasPermission, requestPermission } = useCameraPermission()
@@ -179,6 +205,7 @@ function CameraExample() {
             device={device}
             isActive={isAppActive}
             photo
+            frameProcessor={frameProcessor}
             resizeMode="contain"
             onError={(error) => { setCameraError(error); setSwitching(false) }}
             onInitialized={() => { setInitialized(true); setSwitching(false) }}
@@ -212,6 +239,11 @@ function CameraExample() {
           <Text style={styles.cameraStatus}>
             Camera: {cameraError != null ? 'error' : initialized ? 'active' : 'starting'}
             {'  ·  '}Preview: {previewStarted ? 'active' : 'starting'}
+          </Text>
+          <Text testID="frame-processor-status" style={styles.cameraStatus}>
+            Frame processor: {frameProcessorReport.count > 0
+              ? `active · ${frameProcessorReport.count} frames · ${frameProcessorReport.width} × ${frameProcessorReport.height} ${frameProcessorReport.pixelFormat}`
+              : initialized ? 'waiting for frames' : 'starting'}
           </Text>
           {captureState.error != null && (
             <View style={styles.errorCard} accessibilityRole="alert">

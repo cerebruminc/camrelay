@@ -20,7 +20,7 @@
         {
           "cameraPermissionText": "Allow CamRelay Expo to display the camera feed.",
           "enableMicrophonePermission": false,
-          "enableFrameProcessors": false
+          "enableFrameProcessors": true
         }
       ]
     ]
