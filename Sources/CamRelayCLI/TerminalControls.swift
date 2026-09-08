@@ -1,19 +1,30 @@
+import CamRelayAndroid
 import CamRelayCore
 import CamRelayIOS
 import Darwin
 import Foundation
 
+protocol RelaySessionControl: AnyObject, Sendable {
+    func status() -> RelayStatus
+    func handle(_ request: RelayControlRequest) async -> RelayControlResponse
+}
+
+extension IOSRelaySession: RelaySessionControl {}
+extension AndroidRelaySession: RelaySessionControl {}
+
 final class TerminalControls: @unchecked Sendable {
-    private let session: IOSRelaySession
+    private let session: any RelaySessionControl
     private let shutdown: ShutdownSignal
+    private let supportsPause: Bool
     private let lock = NSLock()
     private let group = DispatchGroup()
     private var stopped = false
     private var original = termios()
 
-    init(session: IOSRelaySession, shutdown: ShutdownSignal) throws {
+    init(session: any RelaySessionControl, shutdown: ShutdownSignal, supportsPause: Bool = true) throws {
         self.session = session
         self.shutdown = shutdown
+        self.supportsPause = supportsPause
         guard tcgetattr(STDIN_FILENO, &original) == 0 else { throw RelayError("Could not read terminal settings.") }
         var mode = original
         mode.c_lflag &= ~tcflag_t(ICANON | ECHO)
@@ -25,7 +36,8 @@ final class TerminalControls: @unchecked Sendable {
         for (index, name) in session.status().fixtures.enumerated() {
             print("\(index < 9 ? String(index + 1) : "-")  \(name)")
         }
-        print("1-9 select | n next | b previous | r replay | space pause/play | q stop")
+        let pauseHelp = supportsPause ? " | space pause/play" : ""
+        print("1-9 select | n next | b previous | r replay\(pauseHelp) | q stop")
         group.enter()
         DispatchQueue(label: "org.camrelay.terminal").async { [self] in
             readKeys()
@@ -53,7 +65,9 @@ final class TerminalControls: @unchecked Sendable {
             case 110: request = RelayControlRequest(action: .next)
             case 98: request = RelayControlRequest(action: .previous)
             case 114: request = RelayControlRequest(action: .replay)
-            case 32: request = RelayControlRequest(action: state.paused ? .play : .pause)
+            case 32:
+                guard supportsPause else { continue }
+                request = RelayControlRequest(action: state.paused ? .play : .pause)
             default: continue
             }
             let finished = DispatchSemaphore(value: 0)

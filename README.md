@@ -23,9 +23,9 @@ After [building from source](#build-and-run-from-source), run it from the reposi
 - Repeats images and samples videos at the session's output rate while preserving source playback speed and loop duration.
 - Removes the Simulator-wide feed and stops the relay on Ctrl-C or SIGTERM.
 
-## Android Emulator MVP
+## Android Emulator
 
-The Android backend currently accepts one image fixture and launches the selected Android Virtual Device with environment cameras enabled:
+The Android backend accepts image and video fixtures and launches the selected Android Virtual Device with front and back environment cameras enabled:
 
 ```sh
 swift build
@@ -34,9 +34,23 @@ swift build
 
 If only one AVD exists, omit `--avd`. CamRelay finds the SDK through `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or the standard macOS SDK location. The selected AVD must not already be running because the environment camera mode is chosen at emulator startup.
 
-The emulator exposes front and back cameras through standard Android camera APIs. CamRelay controls it through an ephemeral, token-protected gRPC endpoint restricted to localhost. It temporarily installs the selected image in the AVD's `environment.ini`, then restores the previous file after the owned emulator exits. `camrelay status` and `camrelay stop` work with the Android session; Ctrl-C and SIGTERM also stop the emulator and restore its configuration.
+The emulator exposes both cameras through standard Android camera APIs. CamRelay controls it through an ephemeral, token-protected gRPC endpoint restricted to localhost. It temporarily installs the initial fixture in the AVD's `environment.ini`, then restores the previous file after the owned emulator exits. Ctrl-C, SIGTERM, and `camrelay stop` stop the emulator and restore its configuration.
 
-This first Android phase does not yet include video, multiple fixtures, live switching, pause, replay, or delivery acknowledgements. Those remain on the iOS backend until the next Android phase. Android Emulator 36.6.11 is the currently validated version.
+Named fixtures can switch without restarting the emulator or app:
+
+```sh
+.build/debug/camrelay run --platform android --avd Pixel_10 --session demo \
+  --fixture pattern=.build/fixtures/checkerboard.png \
+  --fixture colors=.build/fixtures/colors.mp4 \
+  --initial pattern
+
+.build/debug/camrelay select colors --session demo
+.build/debug/camrelay replay --session demo
+.build/debug/camrelay next --session demo
+.build/debug/camrelay status --session demo --json
+```
+
+The Android Emulator loops videos at their source cadence and applies their orientation metadata. CamRelay supports `select`, `replay`, `next`, `previous`, `status`, `wait`, and `stop` for Android. Pause/play, `--paused`, and `--wait-for-frame` are not available because the emulator environment camera does not expose those controls or app delivery acknowledgements. Android status therefore reports selection and generation, while source position, output format, and receiver counts remain zero. Android Emulator 36.6.11 is the currently validated version.
 
 ## Build and run from source
 
@@ -101,7 +115,7 @@ Generate a set of reusable fixtures, then start one named session from the repos
   --initial colors --paused
 ```
 
-Launch the app once after the session is ready. The initial frame stays visible until you start playback. Switching fixtures changes the feed for the entire Simulator, including both synthetic cameras. CamRelay does not infer which screen the app is showing.
+Launch the app once after the session is ready. On iOS, the initial frame stays visible until you start playback. Switching fixtures changes both cameras without CamRelay knowing which app screen is visible.
 
 - `colors.mp4`: a 320×240, 15 fps video that cycles through red, green, and blue over three seconds.
 - `checkerboard.png`: a 480×640 black-and-white pattern for checking static input and aspect fitting.
@@ -109,7 +123,7 @@ Launch the app once after the session is ready. The initial frame stays visible 
 
 The fixtures are generated locally under `.build/fixtures`; no footage or downloads are needed. Fixture names are your own labels, and the app never receives them.
 
-In an interactive terminal, press `1` through `9` to select a fixture, `n` for next, `b` for previous, `r` to replay, space to pause or resume, and `q` to stop. Next and previous wrap around the fixture list. Selection and replay start at the beginning and play immediately.
+In an interactive terminal, press `1` through `9` to select a fixture, `n` for next, `b` for previous, `r` to replay, and `q` to stop. On iOS, space pauses or resumes. Next and previous wrap around the fixture list. Selection and replay start at the beginning and play immediately.
 
 From another terminal, or from a test runner:
 
@@ -123,9 +137,9 @@ From another terminal, or from a test runner:
 .build/debug/camrelay stop --session demo
 ```
 
-Use `--paused` on select, replay, next, or previous to hold the replacement's first frame. Pausing holds the image but keeps camera samples and their timestamps advancing. A failed file load leaves the previous source selected.
+On iOS, use `--paused` on select, replay, next, or previous to hold the replacement's first frame. Pausing holds the image but keeps camera samples and their timestamps advancing. A failed file load leaves the previous source selected on either platform.
 
-The first fixture determines the camera format for the whole session. This example keeps the initial video's 320×240, 15 fps output when switching to the 1280×720, 24 fps clip or the portrait image. CamRelay preserves aspect ratio and playback speed; it does not renegotiate the app's camera session.
+On iOS, the first fixture determines the camera format for the whole session. This example keeps the initial video's 320×240, 15 fps output when switching to the 1280×720, 24 fps clip or the portrait image. The Android Emulator owns its camera format, fitting, orientation, and playback cadence.
 
 ### CI orchestration
 
@@ -306,4 +320,4 @@ These capabilities are exposed by default as platform behavior. They are not sel
 - Depth data, audio capture, raw photos, and non-QR metadata types are not yet synthesized.
 - Focus, exposure, white-balance, stabilization, and zoom configuration are accepted for compatibility but do not alter fixture pixels.
 - Raw BGRA frames use a loopback TCP stream, so high-resolution throughput depends on the host Mac and should be validated with representative fixtures.
-- Android support is currently limited to the single-image MVP documented above.
+- Android pause/play and delivery acknowledgement controls are not available.

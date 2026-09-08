@@ -14,7 +14,11 @@ struct EmulatorControlClient: Sendable {
         self.curlURL = curlURL
     }
 
-    func setImage(_ imageURL: URL, endpoint: EmulatorControlEndpoint) throws {
+    func setMedia(
+        _ media: MediaFixture,
+        alternatePath: Bool = false,
+        endpoint: EmulatorControlEndpoint
+    ) throws {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: curlURL.path) else {
             throw RelayError("curl is required to control Android Emulator but was not found at \(curlURL.path).")
@@ -22,7 +26,7 @@ struct EmulatorControlClient: Sendable {
 
         let requestURL = fileManager.temporaryDirectory
             .appendingPathComponent("camrelay-android-request-\(UUID().uuidString)")
-        try grpcEnvironmentRequest(sceneMode: "imagefile:\(imageURL.path)")
+        try grpcEnvironmentRequest(sceneMode: androidSceneMode(for: media, alternatePath: alternatePath))
             .write(to: requestURL, options: [.atomic])
         defer { try? fileManager.removeItem(at: requestURL) }
 
@@ -80,6 +84,19 @@ struct EmulatorControlClient: Sendable {
             throw RelayError("Android Emulator rejected the fixture (gRPC status \(status)): \(message)")
         }
     }
+}
+
+func androidSceneMode(for media: MediaFixture, alternatePath: Bool = false) -> String {
+    let path: String
+    if alternatePath {
+        // The emulator ignores an unchanged scene mode. An equivalent path makes replay reload the file.
+        let directory = media.url.deletingLastPathComponent().path
+        let separator = directory == "/" ? "" : "/"
+        path = "\(directory)\(separator)./\(media.url.lastPathComponent)"
+    } else {
+        path = media.url.path
+    }
+    return "\(media.kind == .image ? "imagefile" : "videofile"):\(path)"
 }
 
 func grpcEnvironmentRequest(sceneMode: String) -> Data {

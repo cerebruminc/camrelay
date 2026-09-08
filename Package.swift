@@ -35,7 +35,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CamRelayAndroidTests",
-            dependencies: ["CamRelayAndroid"]
+            dependencies: ["CamRelayAndroid", "CamRelayCore"]
         ),
     ]
 )

@@ -9,7 +9,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
     private let environmentFile: AVDEnvironmentFile
     private let avdLease: RelayLease
     private let sessionName: String
-    private let fixture: NamedFixture
+    private let playback: AndroidPlaybackController
     private let cleanupLock = NSLock()
     private var cleanedUp = false
     private var stopStarted = false
@@ -21,7 +21,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
         environmentFile: AVDEnvironmentFile,
         avdLease: RelayLease,
         sessionName: String,
-        fixture: NamedFixture
+        playback: AndroidPlaybackController
     ) {
         self.device = device
         self.serial = serial
@@ -29,7 +29,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
         self.environmentFile = environmentFile
         self.avdLease = avdLease
         self.sessionName = sessionName
-        self.fixture = fixture
+        self.playback = playback
     }
 
     public func stop() {
@@ -50,14 +50,15 @@ public final class AndroidRelaySession: @unchecked Sendable {
     }
 
     public func status() -> RelayStatus {
-        RelayStatus(
+        let playback = playback.snapshot()
+        return RelayStatus(
             session: sessionName,
             simulator: device.id,
             simulatorID: serial,
-            fixtures: [fixture.name],
-            selected: fixture.name,
+            fixtures: playback.fixtures,
+            selected: playback.selected,
             paused: false,
-            generation: 1,
+            generation: playback.generation,
             positionSeconds: 0,
             connectedReceivers: 0,
             acknowledgedReceivers: 0,
@@ -77,7 +78,9 @@ public final class AndroidRelaySession: @unchecked Sendable {
             case .stop:
                 try await Task.detached(priority: .userInitiated) { try self.stopChecked() }.value
             default:
-                throw RelayError("Android Phase 1 supports one image fixture plus status and stop. Live controls arrive in Phase 2.")
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try self.playback.apply(request)
+                }.value
             }
             return RelayControlResponse(status: status())
         } catch {
@@ -108,31 +111,35 @@ public struct AndroidRelay {
 
     public func start(options: RelayRunOptions) throws -> AndroidRelaySession {
         guard options.platform == .android else { throw RelayError("Expected Android run options.") }
-        guard options.fixtures.count == 1 else {
-            throw RelayError("Android Phase 1 accepts exactly one image fixture.")
-        }
+        guard !options.fixtures.isEmpty else { throw RelayError("Provide at least one fixture.") }
         guard !options.paused else {
-            throw RelayError("Android pause support arrives in Phase 2.")
+            throw RelayError("Android does not support starting paused yet.")
         }
 
-        let namedFixture = options.fixtures[0]
-        let media = try MediaFixture(path: namedFixture.path)
-        guard media.kind == .image else {
-            throw RelayError("Android Phase 1 accepts an image fixture. Video support arrives in Phase 2.")
+        let fixtures = try options.fixtures.map { named in
+            AndroidFixture(name: named.name, media: try MediaFixture(path: named.path))
+        }
+        let initialName = options.initial ?? fixtures[0].name
+        guard let initial = fixtures.first(where: { $0.name == initialName }) else {
+            throw RelayError("Unknown initial fixture: \(initialName)")
         }
 
         let device = try controller.selectAVD(named: options.androidAVD)
         try RelayCommand.validateName(device.id, kind: "AVD name")
         let lease = try RelayLease(key: "android-\(device.id)")
-        let environmentFile = try AVDEnvironmentFile(avdDirectory: device.directoryURL, imageURL: media.url)
+        let environmentFile = try AVDEnvironmentFile(avdDirectory: device.directoryURL, media: initial.media)
         var emulator: AndroidEmulatorProcess?
 
         do {
             let launched = try controller.launch(device)
             emulator = launched
             let endpoint = try launched.waitForControl()
-            try controlClient.setImage(media.url, endpoint: endpoint)
             try launched.waitUntilBooted(endpoint: endpoint)
+            try controlClient.setMedia(initial.media, alternatePath: true, endpoint: endpoint)
+            let client = controlClient
+            let playback = AndroidPlaybackController(fixtures: fixtures, initial: initial.name) { media, alternatePath in
+                try client.setMedia(media, alternatePath: alternatePath, endpoint: endpoint)
+            }
             return AndroidRelaySession(
                 device: device,
                 serial: endpoint.serial,
@@ -140,7 +147,7 @@ public struct AndroidRelay {
                 environmentFile: environmentFile,
                 avdLease: lease,
                 sessionName: options.session,
-                fixture: NamedFixture(name: namedFixture.name, path: media.url.path)
+                playback: playback
             )
         } catch {
             let startupError = error
@@ -150,6 +157,101 @@ public struct AndroidRelay {
                 throw RelayError("\(startupError.localizedDescription) Cleanup also failed: \(error.localizedDescription)")
             }
             throw startupError
+        }
+    }
+}
+
+struct AndroidFixture: Equatable, Sendable {
+    let name: String
+    let media: MediaFixture
+}
+
+struct AndroidPlaybackSnapshot: Equatable, Sendable {
+    let fixtures: [String]
+    let selected: String
+    let generation: UInt64
+}
+
+final class AndroidPlaybackController: @unchecked Sendable {
+    private struct State {
+        var selectedIndex: Int
+        var generation: UInt64 = 1
+        var alternatePath = true
+    }
+
+    private let fixtures: [AndroidFixture]
+    private let setMedia: @Sendable (MediaFixture, Bool) throws -> Void
+    private let commandLock = NSLock()
+    private let stateLock = NSLock()
+    private var state: State
+
+    init(
+        fixtures: [AndroidFixture],
+        initial: String,
+        setMedia: @escaping @Sendable (MediaFixture, Bool) throws -> Void
+    ) {
+        self.fixtures = fixtures
+        self.setMedia = setMedia
+        state = State(selectedIndex: fixtures.firstIndex(where: { $0.name == initial }) ?? 0)
+    }
+
+    func snapshot() -> AndroidPlaybackSnapshot {
+        stateLock.withLock {
+            let selected = fixtures[state.selectedIndex]
+            return AndroidPlaybackSnapshot(
+                fixtures: fixtures.map(\.name),
+                selected: selected.name,
+                generation: state.generation
+            )
+        }
+    }
+
+    func apply(_ request: RelayControlRequest) throws -> UInt64 {
+        commandLock.lock()
+        defer { commandLock.unlock() }
+        guard !request.paused else { throw RelayError("Android pause support is not available yet.") }
+        guard !request.waitForFrame else {
+            throw RelayError("Android does not provide app delivery acknowledgements for --wait-for-frame yet.")
+        }
+
+        let current = stateLock.withLock { state }
+        let targetIndex: Int
+        switch request.action {
+        case .select:
+            guard let name = request.fixture,
+                  let index = fixtures.firstIndex(where: { $0.name == name }) else {
+                throw RelayError("Unknown fixture: \(request.fixture ?? ""). Available: \(fixtures.map(\.name).joined(separator: ", "))")
+            }
+            targetIndex = index
+        case .replay:
+            targetIndex = current.selectedIndex
+        case .next:
+            targetIndex = (current.selectedIndex + 1) % fixtures.count
+        case .previous:
+            targetIndex = (current.selectedIndex + fixtures.count - 1) % fixtures.count
+        case .pause, .play:
+            throw RelayError("Android pause and play support is not available yet.")
+        case .status, .stop:
+            throw RelayError("This command does not change Android playback.")
+        }
+
+        let target = fixtures[targetIndex]
+        let refreshed: MediaFixture
+        do { refreshed = try MediaFixture(path: target.media.url.path) }
+        catch {
+            throw RelayError("Could not load fixture \(target.name) (\(target.media.url.path)): \(error.localizedDescription)")
+        }
+        let alternatePath = !current.alternatePath
+        do { try setMedia(refreshed, alternatePath) }
+        catch {
+            throw RelayError("Could not select fixture \(target.name) (\(target.media.url.path)): \(error.localizedDescription)")
+        }
+
+        return stateLock.withLock {
+            state.selectedIndex = targetIndex
+            state.generation += 1
+            state.alternatePath = alternatePath
+            return state.generation
         }
     }
 }

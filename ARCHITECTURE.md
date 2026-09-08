@@ -1,6 +1,6 @@
 # Architecture
 
-CamRelay supplies media fixtures as camera input to apps running in virtual mobile devices. The complete iOS backend loads a runtime into Simulator app processes and backs synthetic AVFoundation objects with timed frames from the macOS CLI. The Android MVP launches an AVD with the emulator's environment cameras and supplies one image through authenticated emulator control.
+CamRelay supplies media fixtures as camera input to apps running in virtual mobile devices. The iOS backend loads a runtime into Simulator app processes and backs synthetic AVFoundation objects with timed frames from the macOS CLI. The Android backend launches an AVD with the emulator's environment cameras and selects image or video fixtures through authenticated emulator control.
 
 Work is split between the macOS host and Simulator app processes:
 
@@ -129,11 +129,13 @@ The CLI receives `SIGINT` and `SIGTERM` through dispatch signal sources. Termina
 
 If Simulator activation fails after the server starts, `IOSRelay` stops the server before returning the error.
 
-## Android MVP lifecycle
+## Android lifecycle
 
-`camrelay --platform android` selects the only AVD or the one named by `--avd`. It backs up the AVD's `environment.ini`, writes the initial image, and launches the emulator with front and back environment cameras. The emulator chooses an ephemeral localhost gRPC port and generates a bearer token in its private discovery file. CamRelay reads that file, sends `setEnvironment` with the token, then waits for Android to finish booting through `adb`.
+`camrelay --platform android` selects the only AVD or the one named by `--avd`. It backs up the AVD's `environment.ini`, writes the initial image or video, and launches the emulator with front and back environment cameras. The emulator chooses an ephemeral localhost gRPC port and generates a bearer token in its private discovery file. CamRelay reads that file, sends `setEnvironment` with the token, then waits for Android to finish booting through `adb`.
 
-The Android session owns the emulator process it starts. `stop`, Ctrl-C, and SIGTERM interrupt that process, wait for it to exit, and restore the exact previous `environment.ini` contents and permissions. If startup fails, the same cleanup runs before the error is returned. Phase 1 exposes status and stop only; media playback controls remain in the iOS relay until the Android playback phase.
+The Android session owns the emulator process it starts. `stop`, Ctrl-C, and SIGTERM interrupt that process, wait for it to exit, and restore the exact previous `environment.ini` contents and permissions. If startup fails, the same cleanup runs before the error is returned.
+
+Named selection, replay, next, and previous commands send another `setEnvironment` request over the same authenticated endpoint. The emulator changes both environment cameras without restarting the emulator or app, loops video at the source cadence, and applies video orientation metadata. Because the emulator ignores an unchanged scene-mode string, the controller alternates between two equivalent forms of the media path so replay reloads the same file. CamRelay commits the new selection and generation only after the control request succeeds. Android does not expose pause/resume or app frame acknowledgements through this camera path, so pause/play, `--paused`, and `--wait-for-frame` remain iOS-only.
 
 ## Named sessions and playback control
 
@@ -150,7 +152,7 @@ Terminal keys call the same session controller as socket requests. `PlaybackComm
 | `select` | Open the named fixture and start it at source position zero. |
 | `replay` | Reopen the current fixture at position zero. |
 | `next`, `previous` | Select an adjacent fixture, wrapping around the ordered list. |
-| `pause`, `play` | Hold or resume the source position while camera samples continue. |
+| `pause`, `play` | Hold or resume the source position while camera samples continue (iOS only). |
 | `status` | Return the selected source, generation, pause state, source position, output format, receiver counts, and any decoder error. |
 | `wait` | Retry the status connection until the named relay is ready or the readiness timeout expires. |
 | `stop` | Remove activation and stop streaming, then reply before closing the management endpoint. |

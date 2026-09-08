@@ -11,10 +11,10 @@ After building the runtime and CLI, source-build commands run from the repositor
 ```sh
 .build/debug/camrelay path/to/fixture.mp4
 .build/debug/camrelay path/to/fixture.png
-.build/debug/camrelay --platform android --avd Pixel_10 path/to/fixture.png
+.build/debug/camrelay --platform android --avd Pixel_10 path/to/fixture.mp4
 ```
 
-The complete backend is iOS Simulator on macOS. Android Emulator has a single-image MVP that owns the selected AVD lifecycle. Shared code must remain portable without depending on Apple-only frameworks.
+The iOS Simulator backend is complete. Android Emulator supports image and video fixtures, live named-fixture switching, replay, and owned AVD lifecycle. Shared code must remain portable without depending on Apple-only frameworks.
 
 ## Product Requirements
 
@@ -49,7 +49,7 @@ The iOS runtime is enabled in the booted Simulator's launch environment for the 
 
 Ctrl-C and SIGTERM remove every relay value from the Simulator launch environment and stop the frame server. Control connections notify already-loaded runtimes that the relay ended without transferring app lifecycle ownership to the CLI. Signal handling and cleanup must remain reliable when multiple apps and worker threads are active.
 
-The Android MVP launches a stopped AVD with front and back environment cameras. It uses the emulator's ephemeral, token-protected localhost gRPC endpoint and temporarily updates the AVD's `environment.ini`. Stopping the relay shuts down only the emulator process it launched, then restores the prior file. Android apps continue to use standard camera APIs without CamRelay integration.
+The Android backend launches a stopped AVD with front and back environment cameras. It uses the emulator's ephemeral, token-protected localhost gRPC endpoint, temporarily updates the AVD's `environment.ini`, and switches image or video fixtures through the same endpoint. Stopping the relay shuts down only the emulator process it launched, then restores the prior file. Android apps continue to use standard camera APIs without CamRelay integration. Pause/play and app delivery acknowledgements are not available through this emulator camera path.
 
 ## Camera Compatibility
 

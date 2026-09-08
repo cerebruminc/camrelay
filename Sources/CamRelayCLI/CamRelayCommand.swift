@@ -19,23 +19,24 @@ Run options:
   --platform <name>         Target ios (default) or android.
   --avd <name>              Choose an Android Virtual Device (automatic when only one exists).
   --initial <fixture-name>   Choose the first fixture (default: first listed).
-  --paused                   Hold the initial frame until play.
+  --paused                   Hold the initial frame until play (iOS only).
   --no-interactive           Disable terminal controls (automatic without a TTY).
 
 Control options:
   --session <name>           Address a running session (default: default).
   --timeout <seconds>        Readiness/delivery timeout, up to 300s (default: 10s).
-  --wait-for-frame           Wait for every connected receiver to acknowledge this selection.
-  --json                    Write a structured status/error response.
+  --wait-for-frame           Wait for every connected receiver to acknowledge this selection (iOS only).
+  --json                     Write a structured status/error response.
 
 Positional paths receive names fixture-1, fixture-2, and so on.
-Interactive keys: 1-9 select, n next, b previous, r replay, space pause/play, q stop.
+Interactive keys: 1-9 select, n next, b previous, r replay, q stop; space pauses/plays on iOS.
 
 Examples:
   camrelay ./fixtures/checkerboard.png
   camrelay ./fixtures/colors.mp4
   camrelay --platform android --avd Pixel_10 ./fixtures/checkerboard.png
   camrelay run --session demo --fixture colors=colors.mp4 --fixture pattern=checkerboard.png
+  camrelay run --platform android --avd Pixel_10 --session demo --fixture colors=colors.mp4 --fixture pattern=checkerboard.png
   camrelay select pattern --session demo --wait-for-frame --timeout 10s
 """
 
@@ -116,7 +117,15 @@ struct CamRelayCommand {
         print("CamRelay session \(options.session) is ready in Android AVD \(session.device.id) (\(session.serial)).")
         print("Apps use the fixture through standard Android camera APIs; no app changes are needed.")
         printResponse(RelayControlResponse(status: session.status()), json: false)
-        print("Use camrelay status/stop --session \(options.session), or Ctrl-C to stop.")
+
+        let terminal: TerminalControls?
+        if !options.noInteractive && isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1 {
+            terminal = try TerminalControls(session: session, shutdown: shutdown, supportsPause: false)
+        } else {
+            terminal = nil
+            print("Use camrelay select/status/stop --session \(options.session), or Ctrl-C to stop.")
+        }
+        defer { terminal?.stop() }
         shutdown.wait()
     }
 

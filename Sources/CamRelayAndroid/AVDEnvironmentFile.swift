@@ -9,15 +9,15 @@ final class AVDEnvironmentFile: @unchecked Sendable {
     private let lock = NSLock()
     private var restored = false
 
-    init(avdDirectory: URL, imageURL: URL, fileManager: FileManager = .default) throws {
-        guard !imageURL.path.contains("\n"), !imageURL.path.contains("\r") else {
+    init(avdDirectory: URL, media: MediaFixture, fileManager: FileManager = .default) throws {
+        guard !media.url.path.contains("\n"), !media.url.path.contains("\r") else {
             throw RelayError("Android fixture paths cannot contain line breaks.")
         }
         url = avdDirectory.appendingPathComponent("environment.ini")
         originalData = fileManager.contents(atPath: url.path)
         originalPermissions = try? fileManager.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
 
-        let contents = Data("scene.mode = imagefile:\(imageURL.path)\n".utf8)
+        let contents = Data("scene.mode = \(androidSceneMode(for: media))\n".utf8)
         do {
             try contents.write(to: url, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)

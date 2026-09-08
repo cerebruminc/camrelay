@@ -1,4 +1,5 @@
 @testable import CamRelayAndroid
+import CamRelayCore
 import Foundation
 import Testing
 
@@ -64,6 +65,73 @@ func encodesEnvironmentRequest() {
     #expect(grpcStatus(in: "HTTP/2 200\r\n") == nil)
 }
 
+@Test("Maps image and video fixtures to Android environment modes")
+func mapsAndroidSceneModes() throws {
+    let fixture = try AndroidMediaFixture()
+    defer { fixture.remove() }
+
+    #expect(androidSceneMode(for: try MediaFixture(path: fixture.imageURL.path))
+        == "imagefile:\(fixture.imageURL.path)")
+    #expect(androidSceneMode(for: try MediaFixture(path: fixture.videoURL.path))
+        == "videofile:\(fixture.videoURL.path)")
+    #expect(androidSceneMode(for: try MediaFixture(path: fixture.videoURL.path), alternatePath: true)
+        == "videofile:\(fixture.root.path)/./colors.mp4")
+}
+
+@Test("Switches and replays Android fixtures without restarting the session")
+func controlsAndroidPlayback() throws {
+    let fixture = try AndroidMediaFixture()
+    defer { fixture.remove() }
+    let recorder = MediaRecorder()
+    let playback = try makePlayback(fixture: fixture) { recorder.append($0, alternatePath: $1) }
+
+    #expect(playback.snapshot() == AndroidPlaybackSnapshot(
+        fixtures: ["pattern", "colors"], selected: "pattern", generation: 1
+    ))
+    #expect(try playback.apply(RelayControlRequest(action: .select, fixture: "colors")) == 2)
+    #expect(try playback.apply(RelayControlRequest(action: .replay)) == 3)
+    #expect(try playback.apply(RelayControlRequest(action: .next)) == 4)
+    #expect(try playback.apply(RelayControlRequest(action: .previous)) == 5)
+    #expect(playback.snapshot().selected == "colors")
+    #expect(recorder.paths == [
+        fixture.videoURL.path,
+        fixture.videoURL.path,
+        fixture.imageURL.path,
+        fixture.videoURL.path,
+    ])
+    #expect(recorder.alternatePaths == [false, true, false, true])
+}
+
+@Test("Keeps the active Android fixture when replacement fails")
+func preservesAndroidPlaybackAfterFailure() throws {
+    let fixture = try AndroidMediaFixture()
+    defer { fixture.remove() }
+    let playback = try makePlayback(fixture: fixture) { media, _ in
+        if media.kind == .video { throw RelayError("rejected") }
+    }
+
+    #expect(throws: RelayError.self) {
+        _ = try playback.apply(RelayControlRequest(action: .select, fixture: "colors"))
+    }
+    #expect(playback.snapshot() == AndroidPlaybackSnapshot(
+        fixtures: ["pattern", "colors"], selected: "pattern", generation: 1
+    ))
+}
+
+@Test("Rejects Android pause and delivery acknowledgement controls")
+func rejectsUnsupportedAndroidControls() throws {
+    let fixture = try AndroidMediaFixture()
+    defer { fixture.remove() }
+    let playback = try makePlayback(fixture: fixture) { _, _ in }
+
+    #expect(throws: RelayError.self) {
+        _ = try playback.apply(RelayControlRequest(action: .pause))
+    }
+    #expect(throws: RelayError.self) {
+        _ = try playback.apply(RelayControlRequest(action: .replay, waitForFrame: true))
+    }
+}
+
 @Test("Restores an AVD environment file after the relay")
 func restoresAVDEnvironment() throws {
     let root = FileManager.default.temporaryDirectory
@@ -76,7 +144,7 @@ func restoresAVDEnvironment() throws {
     let imageURL = root.appendingPathComponent("fixture with spaces.png")
     try Data().write(to: imageURL)
 
-    let managed = try AVDEnvironmentFile(avdDirectory: root, imageURL: imageURL)
+    let managed = try AVDEnvironmentFile(avdDirectory: root, media: try MediaFixture(path: imageURL.path))
     #expect(String(decoding: try Data(contentsOf: environmentURL), as: UTF8.self)
         == "scene.mode = imagefile:\(imageURL.path)\n")
     try managed.restore()
@@ -93,7 +161,7 @@ func removesCreatedAVDEnvironment() throws {
     let imageURL = root.appendingPathComponent("fixture.png")
     try Data().write(to: imageURL)
 
-    let managed = try AVDEnvironmentFile(avdDirectory: root, imageURL: imageURL)
+    let managed = try AVDEnvironmentFile(avdDirectory: root, media: try MediaFixture(path: imageURL.path))
     #expect(FileManager.default.fileExists(atPath: environmentURL.path))
     try managed.restore()
     #expect(!FileManager.default.fileExists(atPath: environmentURL.path))
@@ -142,4 +210,54 @@ private final class AndroidSDKFixture {
     func remove() {
         try? FileManager.default.removeItem(at: root)
     }
+}
+
+private final class AndroidMediaFixture {
+    let root: URL
+    let imageURL: URL
+    let videoURL: URL
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("camrelay-android-media-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        imageURL = root.appendingPathComponent("pattern.png")
+        videoURL = root.appendingPathComponent("colors.mp4")
+        try Data().write(to: imageURL)
+        try Data().write(to: videoURL)
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private final class MediaRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+    private var alternateStorage: [Bool] = []
+
+    var paths: [String] { lock.withLock { storage } }
+    var alternatePaths: [Bool] { lock.withLock { alternateStorage } }
+
+    func append(_ media: MediaFixture, alternatePath: Bool) {
+        lock.withLock {
+            storage.append(media.url.path)
+            alternateStorage.append(alternatePath)
+        }
+    }
+}
+
+private func makePlayback(
+    fixture: AndroidMediaFixture,
+    setMedia: @escaping @Sendable (MediaFixture, Bool) throws -> Void
+) throws -> AndroidPlaybackController {
+    AndroidPlaybackController(
+        fixtures: [
+            AndroidFixture(name: "pattern", media: try MediaFixture(path: fixture.imageURL.path)),
+            AndroidFixture(name: "colors", media: try MediaFixture(path: fixture.videoURL.path)),
+        ],
+        initial: "pattern",
+        setMedia: setMedia
+    )
 }
