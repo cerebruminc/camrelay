@@ -171,7 +171,7 @@ function CameraExample() {
           </Text>
         </View>
 
-        <View style={styles.viewfinder}>
+        <View testID="camera-preview" style={styles.viewfinder}>
           <Camera
             key={cameraKey}
             ref={camera}

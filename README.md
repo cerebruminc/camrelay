@@ -28,8 +28,11 @@ After [building from source](#build-and-run-from-source), run it from the reposi
 The Android backend accepts image and video fixtures and launches the selected Android Virtual Device with front and back environment cameras enabled:
 
 ```sh
+CAMRELAY_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+"$CAMRELAY_SDK/emulator/emulator" -list-avds
+AVD_NAME=your_avd_name
 swift build
-.build/debug/camrelay --platform android --avd Pixel_10 .build/fixtures/checkerboard.png
+.build/debug/camrelay --platform android --avd "$AVD_NAME" .build/fixtures/checkerboard.png
 ```
 
 If only one AVD exists, omit `--avd`. CamRelay finds the SDK through `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or the standard macOS SDK location. The selected AVD must not already be running because the environment camera mode is chosen at emulator startup.
@@ -39,7 +42,8 @@ The emulator exposes both cameras through standard Android camera APIs. CamRelay
 Named fixtures can switch without restarting the emulator or app:
 
 ```sh
-.build/debug/camrelay run --platform android --avd Pixel_10 --session demo \
+AVD_NAME=your_avd_name
+.build/debug/camrelay run --platform android --avd "$AVD_NAME" --session demo \
   --fixture pattern=.build/fixtures/checkerboard.png \
   --fixture colors=.build/fixtures/colors.mp4 \
   --initial pattern
@@ -51,6 +55,20 @@ Named fixtures can switch without restarting the emulator or app:
 ```
 
 The Android Emulator loops videos at their source cadence and applies their orientation metadata. CamRelay supports `select`, `replay`, `next`, `previous`, `status`, `wait`, and `stop` for Android. Pause/play, `--paused`, and `--wait-for-frame` are not available because the emulator environment camera does not expose those controls or app delivery acknowledgements. Android status therefore reports selection and generation, while source position, output format, and receiver counts remain zero. Android Emulator 36.6.11 is the currently validated version.
+
+The repeatable Android check uses the included Expo VisionCamera app. It verifies front/back discovery, preview, photo capture, image and video orientation, video cadence and looping, live fixture switching without an app restart, failed-selection preservation, and AVD cleanup:
+
+```sh
+./scripts/generate-fixtures.sh
+swift build
+cd Examples/CamRelayExpo
+npm run android:validation-build
+cd ../..
+AVD_NAME=your_avd_name
+./scripts/validate-android.sh "$AVD_NAME"
+```
+
+The script requires `adb`, `jq`, ImageMagick, `rg`, and `xmllint`. It owns the stopped AVD for the run and leaves its logs under `.build/validation`.
 
 ## Build and run from source
 
@@ -120,6 +138,8 @@ Launch the app once after the session is ready. On iOS, the initial frame stays 
 - `colors.mp4`: a 320×240, 15 fps video that cycles through red, green, and blue over three seconds.
 - `checkerboard.png`: a 480×640 black-and-white pattern for checking static input and aspect fitting.
 - `moving-shapes.mp4`: a 1280×720, 24 fps video with a moving circle and square, looping every three seconds.
+- `orientation.png`: a portrait quadrant pattern for checking image orientation.
+- `orientation-rotate90.mp4`: a landscape-encoded quadrant video with rotation metadata for checking video orientation.
 
 The fixtures are generated locally under `.build/fixtures`; no footage or downloads are needed. Fixture names are your own labels, and the app never receives them.
 
@@ -237,7 +257,7 @@ Logs remain under `.build/validation`. The probe stays open after the relay stop
 
 ## Expo VisionCamera example
 
-`CamRelayExpo` is an Expo development build that renders a live preview with `react-native-vision-camera`. Use it when compatibility needs to be checked through a React Native camera library without building another application.
+`CamRelayExpo` is an Expo development build that renders a live preview with `react-native-vision-camera` on iOS Simulator and Android Emulator. Use it when compatibility needs to be checked through a React Native camera library without changing an app under test.
 
 Install its dependencies once:
 
@@ -246,7 +266,7 @@ cd Examples/CamRelayExpo
 npm install
 ```
 
-Boot one iOS Simulator and create the first native build:
+For iOS, boot one Simulator and create the first native build:
 
 ```sh
 npm run ios
@@ -260,7 +280,13 @@ With the runtime and CLI built as described above, start CamRelay from the repos
 
 The example reports camera and preview state over the live view. Visible motion confirms that the video fixture is advancing. Its native development build is required because VisionCamera is not included in Expo Go.
 
-The generated `ios` directory is disposable and ignored. After the first native build, JavaScript-only changes can use `npm start` with the already installed app. See [`Examples/CamRelayExpo/README.md`](Examples/CamRelayExpo/README.md) for the full workflow and Simulator-specific details.
+For Android, create the release APK used by the repeatable validation script:
+
+```sh
+npm run android:validation-build
+```
+
+The generated `ios` and `android` directories are disposable and ignored. After the first development build, JavaScript-only changes can use `npm start` with the already installed app. See [`Examples/CamRelayExpo/README.md`](Examples/CamRelayExpo/README.md) for both workflows.
 
 ### Choosing validation scope
 

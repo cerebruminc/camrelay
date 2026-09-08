@@ -135,6 +135,7 @@ public struct AndroidRelay {
             emulator = launched
             let endpoint = try launched.waitForControl()
             try launched.waitUntilBooted(endpoint: endpoint)
+            try launched.waitUntilEnvironmentCamerasAvailable(endpoint: endpoint)
             try controlClient.setMedia(initial.media, alternatePath: true, endpoint: endpoint)
             let client = controlClient
             let playback = AndroidPlaybackController(fixtures: fixtures, initial: initial.name) { media, alternatePath in

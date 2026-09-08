@@ -131,7 +131,7 @@ If Simulator activation fails after the server starts, `IOSRelay` stops the serv
 
 ## Android lifecycle
 
-`camrelay --platform android` selects the only AVD or the one named by `--avd`. It backs up the AVD's `environment.ini`, writes the initial image or video, and launches the emulator with front and back environment cameras. The emulator chooses an ephemeral localhost gRPC port and generates a bearer token in its private discovery file. CamRelay reads that file, sends `setEnvironment` with the token, then waits for Android to finish booting through `adb`.
+`camrelay --platform android` selects the only AVD or the one named by `--avd`. It backs up the AVD's `environment.ini`, writes the initial image or video, and launches the emulator with front and back environment cameras. The emulator chooses an ephemeral localhost gRPC port and generates a bearer token in its private discovery file. CamRelay reads that file, waits for Android to finish booting and publish both camera mappings through `adb`, then sends `setEnvironment` with the token.
 
 The Android session owns the emulator process it starts. `stop`, Ctrl-C, and SIGTERM interrupt that process, wait for it to exit, and restore the exact previous `environment.ini` contents and permissions. If startup fails, the same cleanup runs before the error is returned.
 
@@ -502,11 +502,13 @@ Its front/back camera selector exercises camera input and output reconfiguration
 
 ### React Native validation app
 
-`CamRelayExpo` checks front and back camera discovery and a live preview through the included React Native camera dependency. Its local dependency patch allows Simulator camera setup when AVFoundation returns a video device and avoids configuring an unused audio capture graph. The patch is part of the validation example; apps do not integrate with the CamRelay runtime directly.
+`CamRelayExpo` checks front and back camera discovery, live preview, and photo capture through the included React Native camera dependency on iOS Simulator and Android Emulator. Its local dependency patch allows iOS Simulator camera setup when AVFoundation returns a video device and avoids configuring an unused audio capture graph. The patch is part of the validation example; apps do not integrate with CamRelay directly.
 
-The example shows a camera preview, takes photos, counts completed captures, and switches between front and back cameras through its normal camera API. Each capture opens a review of the saved image; closing it returns to the live view, where a thumbnail reopens the last photo. A pure capture-state reducer covers progress, success, failure, and review navigation. Validation URLs invoke the same capture, camera-switch, review, and retry handlers as the buttons, allowing `simctl openurl` to drive the app while separate CLI commands select fixtures. The app has no fixture list or prescribed capture sequence.
+The example shows a camera preview, takes photos, counts completed captures, and switches between front and back cameras through its normal camera API. Each capture opens a review of the saved image; closing it returns to the live view, where a thumbnail reopens the last photo. A pure capture-state reducer covers progress, success, failure, and review navigation. Validation URLs invoke the same capture, camera-switch, review, and retry handlers as the buttons, allowing `simctl openurl` or Android intents to drive the app while separate CLI commands select fixtures. The app has no fixture list or prescribed capture sequence.
 
-The fixture generator creates a changing-color video, a static checkerboard, and a moving-shapes video for the multi-fixture example. Their different dimensions and frame rates exercise image/video switching and aspect fitting. Additional solid-color, portrait, 720p, and 1080p fixtures support focused media checks. All media is generated locally, and build artifacts remain outside source control.
+The fixture generator creates a changing-color video, a static checkerboard, and a moving-shapes video for the multi-fixture example. Their different dimensions and frame rates exercise image/video switching and aspect fitting. A portrait quadrant image and a landscape-encoded video with rotation metadata provide unambiguous orientation checks. Additional solid-color, portrait, 720p, and 1080p fixtures support focused media checks. All media is generated locally, and build artifacts remain outside source control.
+
+`scripts/validate-android.sh` owns one stopped AVD for an end-to-end run. It installs the Expo release build and checks front/back preview, photo capture, live selection, orientation, video cadence and looping, failed-selection preservation, app-process continuity, emulator shutdown, and exact restoration of the AVD camera configuration.
 
 ## Extension boundaries
 

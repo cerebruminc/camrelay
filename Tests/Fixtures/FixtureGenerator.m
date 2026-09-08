@@ -78,6 +78,56 @@ static BOOL WritePNG(NSURL *url, BOOL checkerboard) {
     return success;
 }
 
+static void SetQuadrantPixel(uint8_t *pixel, NSInteger quadrant) {
+    const uint8_t colors[4][3] = {
+        {255, 0, 0},
+        {0, 255, 0},
+        {0, 0, 255},
+        {255, 255, 0},
+    };
+    pixel[0] = colors[quadrant][2];
+    pixel[1] = colors[quadrant][1];
+    pixel[2] = colors[quadrant][0];
+    pixel[3] = 255;
+}
+
+static BOOL WriteOrientationPNG(NSURL *url) {
+    const size_t width = 360;
+    const size_t height = 640;
+    const size_t bytesPerRow = width * 4;
+    uint8_t *bytes = calloc(height, bytesPerRow);
+    if (bytes == NULL) {
+        return NO;
+    }
+    for (size_t y = 0; y < height; y += 1) {
+        for (size_t x = 0; x < width; x += 1) {
+            NSInteger quadrant = (y < height / 2 ? 0 : 2) + (x < width / 2 ? 0 : 1);
+            SetQuadrantPixel(bytes + y * bytesPerRow + x * 4, quadrant);
+        }
+    }
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(
+        bytes, width, height, 8, bytesPerRow, colorSpace,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
+    );
+    CGImageRef image = CGBitmapContextCreateImage(context);
+    CGImageDestinationRef destination = CGImageDestinationCreateWithURL(
+        (__bridge CFURLRef)url, CFSTR("public.png"), 1, NULL
+    );
+    BOOL success = destination != NULL;
+    if (destination != NULL) {
+        CGImageDestinationAddImage(destination, image, NULL);
+        success = CGImageDestinationFinalize(destination);
+        CFRelease(destination);
+    }
+    CGImageRelease(image);
+    CGContextRelease(context);
+    CGColorSpaceRelease(colorSpace);
+    free(bytes);
+    return success;
+}
+
 static void DrawMovingShapes(CVPixelBufferRef buffer, double progress) {
     CVPixelBufferLockBaseAddress(buffer, 0);
     size_t width = CVPixelBufferGetWidth(buffer);
@@ -107,7 +157,32 @@ static void DrawMovingShapes(CVPixelBufferRef buffer, double progress) {
     CVPixelBufferUnlockBaseAddress(buffer, 0);
 }
 
-static BOOL WriteVideo(NSURL *url, NSInteger width, NSInteger height, int32_t framesPerSecond, NSInteger colorOffset, BOOL movingShapes, NSError **error) {
+static void DrawOrientationPattern(CVPixelBufferRef buffer) {
+    CVPixelBufferLockBaseAddress(buffer, 0);
+    size_t width = CVPixelBufferGetWidth(buffer);
+    size_t height = CVPixelBufferGetHeight(buffer);
+    size_t stride = CVPixelBufferGetBytesPerRow(buffer);
+    uint8_t *base = CVPixelBufferGetBaseAddress(buffer);
+    for (size_t y = 0; y < height; y += 1) {
+        for (size_t x = 0; x < width; x += 1) {
+            NSInteger quadrant = (y < height / 2 ? 0 : 2) + (x < width / 2 ? 0 : 1);
+            SetQuadrantPixel(base + y * stride + x * 4, quadrant);
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(buffer, 0);
+}
+
+static BOOL WriteVideo(
+    NSURL *url,
+    NSInteger width,
+    NSInteger height,
+    int32_t framesPerSecond,
+    NSInteger colorOffset,
+    BOOL movingShapes,
+    BOOL orientationPattern,
+    BOOL rotate90,
+    NSError **error
+) {
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
 
     AVAssetWriter *writer = [[AVAssetWriter alloc] initWithURL:url fileType:AVFileTypeMPEG4 error:error];
@@ -121,6 +196,9 @@ static BOOL WriteVideo(NSURL *url, NSInteger width, NSInteger height, int32_t fr
             AVVideoWidthKey: @(width),
             AVVideoHeightKey: @(height),
         }];
+    if (rotate90) {
+        input.transform = CGAffineTransformMakeRotation(M_PI_2);
+    }
     AVAssetWriterInputPixelBufferAdaptor *adaptor = [AVAssetWriterInputPixelBufferAdaptor
         assetWriterInputPixelBufferAdaptorWithAssetWriterInput:input
         sourcePixelBufferAttributes:@{
@@ -163,8 +241,12 @@ static BOOL WriteVideo(NSURL *url, NSInteger width, NSInteger height, int32_t fr
         uint8_t green = color == 1 ? 255 : 0;
         uint8_t blue = color == 2 ? 255 : 0;
         CVPixelBufferRef pixelBuffer = CreatePixelBuffer(adaptor.pixelBufferPool, red, green, blue);
-        if (pixelBuffer != NULL && movingShapes) {
-            DrawMovingShapes(pixelBuffer, (double)frame / (framesPerSecond * 3));
+        if (pixelBuffer != NULL) {
+            if (orientationPattern) {
+                DrawOrientationPattern(pixelBuffer);
+            } else if (movingShapes) {
+                DrawMovingShapes(pixelBuffer, (double)frame / (framesPerSecond * 3));
+            }
         }
         if (pixelBuffer == NULL || ![adaptor appendPixelBuffer:pixelBuffer withPresentationTime:CMTimeMake(frame, framesPerSecond)]) {
             if (pixelBuffer != NULL) {
@@ -210,7 +292,8 @@ int main(int argc, const char *argv[]) {
 
         NSURL *directoryURL = [NSURL fileURLWithPath:directory isDirectory:YES];
         if (!WritePNG([directoryURL URLByAppendingPathComponent:@"red.png"], NO) ||
-            !WritePNG([directoryURL URLByAppendingPathComponent:@"checkerboard.png"], YES)) {
+            !WritePNG([directoryURL URLByAppendingPathComponent:@"checkerboard.png"], YES) ||
+            !WriteOrientationPNG([directoryURL URLByAppendingPathComponent:@"orientation.png"])) {
             fprintf(stderr, "could not create PNG fixtures\n");
             return 1;
         }
@@ -221,12 +304,15 @@ int main(int argc, const char *argv[]) {
             @{@"name": @"colors-720p.mp4", @"width": @1280, @"height": @720, @"fps": @24, @"offset": @1},
             @{@"name": @"colors-portrait.mp4", @"width": @480, @"height": @640, @"fps": @12, @"offset": @2},
             @{@"name": @"colors-1080p.mp4", @"width": @1920, @"height": @1080, @"fps": @30, @"offset": @0},
+            @{@"name": @"orientation-rotate90.mp4", @"width": @640, @"height": @360, @"fps": @12,
+              @"orientation": @YES, @"rotate90": @YES},
         ];
         for (NSDictionary *video in videos) {
             if (!WriteVideo(
                 [directoryURL URLByAppendingPathComponent:video[@"name"]],
                 [video[@"width"] integerValue], [video[@"height"] integerValue],
-                [video[@"fps"] intValue], [video[@"offset"] integerValue], [video[@"motion"] boolValue], &videoError
+                [video[@"fps"] intValue], [video[@"offset"] integerValue], [video[@"motion"] boolValue],
+                [video[@"orientation"] boolValue], [video[@"rotate90"] boolValue], &videoError
             )) {
                 fprintf(stderr, "%s: %s\n", [video[@"name"] UTF8String],
                     (videoError.localizedDescription ?: @"could not create video").UTF8String);

@@ -2,7 +2,7 @@
 
 This example is an Expo development build with a live camera preview, photo capture, and front/back camera switching through `react-native-vision-camera`. It has no fixture list or required capture sequence.
 
-It cannot run in Expo Go because VisionCamera contains native iOS code. The first run generates and builds a local iOS project; later JavaScript-only changes can use the existing build.
+It cannot run in Expo Go because VisionCamera contains native code. The first run generates and builds a local iOS or Android project; later JavaScript-only changes can use the existing development build.
 
 ## Install
 
@@ -11,9 +11,9 @@ cd Examples/CamRelayExpo
 npm install
 ```
 
-The install applies `patches/react-native-vision-camera+4.7.3.patch`. VisionCamera normally rejects every iOS Simulator at compile time. The patch keeps that rejection when no video device exists, permits configuration when CamRelay exposes a discoverable synthetic camera, and avoids configuring the unused audio session because this example disables audio.
+The install applies `patches/react-native-vision-camera+4.7.3.patch`. On iOS, VisionCamera normally rejects every Simulator at compile time. The patch keeps that rejection when no video device exists, permits configuration when CamRelay exposes a discoverable synthetic camera, and avoids configuring the unused audio session because this example disables audio. Android uses VisionCamera without that Simulator-specific path.
 
-## First build
+## iOS build
 
 Boot one iOS Simulator, then run:
 
@@ -22,6 +22,22 @@ npm run ios
 ```
 
 This generates the disposable `ios` directory, builds the native development app, installs it, and starts Metro. The generated native directory is ignored by Git.
+
+## Android build
+
+For local development with an already running emulator:
+
+```sh
+npm run android
+```
+
+For the repeatable repository validation, build a release APK with its JavaScript embedded:
+
+```sh
+npm run android:validation-build
+```
+
+The generated `android` directory is disposable and ignored by Git.
 
 ## Verify CamRelay video
 
@@ -38,6 +54,15 @@ Start CamRelay with a video fixture:
 
 ```sh
 .build/debug/camrelay /absolute/path/to/fixture.mp4
+```
+
+For Android, select a stopped AVD:
+
+```sh
+CAMRELAY_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+"$CAMRELAY_SDK/emulator/emulator" -list-avds
+AVD_NAME=your_avd_name
+.build/debug/camrelay --platform android --avd "$AVD_NAME" /absolute/path/to/fixture.mp4
 ```
 
 Relaunch **CamRelay Expo** after the relay starts. The example must show:
@@ -102,4 +127,22 @@ The app logs `[CameraExample] <camera-position> captured <width>x<height> path=<
 
 The fixtures are generated locally. `colors.mp4` cycles through red, green, and blue at 320×240 and 15 fps. `checkerboard.png` is a 480×640 portrait image. `moving-shapes.mp4` has a moving red circle and green square at 1280×720 and 24 fps. Both videos loop every three seconds. This session keeps the first video's 320×240, 15 fps camera format, fits the other fixtures without cropping, and preserves their playback speed.
 
-Start validation with `npm run typecheck` and `npm test` from `Examples/CamRelayExpo`. The tests cover capture progress, review navigation, repeated captures, file URLs, duplicate actions, and failure recovery without a native camera. Preview or native changes also require the relevant Simulator scenarios.
+For Android, omit `--paused` and `--wait-for-frame`, add `--platform android --avd <name>` to the `run` command, and use the same `select`, `replay`, `next`, and `previous` commands. The emulator applies source orientation metadata and loops video at its source cadence.
+
+## Repeatable Android validation
+
+From the repository root, choose any stopped AVD:
+
+```sh
+./scripts/generate-fixtures.sh
+swift build
+cd Examples/CamRelayExpo
+npm run android:validation-build
+cd ../..
+AVD_NAME=your_avd_name
+./scripts/validate-android.sh "$AVD_NAME"
+```
+
+The script launches and owns the AVD, installs the release example, and checks front/back discovery, preview, photo capture, fixture switching, static and rotated orientation patterns, three-color video cadence and looping, app-process continuity, failed-selection preservation, emulator shutdown, and exact `environment.ini` restoration. It requires `adb`, `jq`, ImageMagick, `rg`, and `xmllint`; artifacts stay under `.build/validation`.
+
+Start validation with `npm run typecheck` and `npm test` from `Examples/CamRelayExpo`. The tests cover capture progress, review navigation, repeated captures, file URLs, duplicate actions, and failure recovery without a native camera. Preview or native changes also require the relevant virtual-device scenario.

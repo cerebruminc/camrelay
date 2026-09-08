@@ -3,12 +3,16 @@
     "name": "CamRelay Expo",
     "slug": "camrelay-expo-example",
     "version": "1.0.0",
+    "scheme": "org.camrelay.expo",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "org.camrelay.expo",
       "supportsTablet": false
+    },
+    "android": {
+      "package": "org.camrelay.expo"
     },
     "plugins": [
       [
@@ -22,4 +26,3 @@
     ]
   }
 }
-

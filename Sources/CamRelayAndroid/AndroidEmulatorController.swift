@@ -177,6 +177,27 @@ public final class AndroidEmulatorProcess: @unchecked Sendable {
         throw RelayError("Timed out waiting for Android AVD \(avdID) to boot.")
     }
 
+    func waitUntilEnvironmentCamerasAvailable(
+        endpoint: EmulatorControlEndpoint,
+        timeout: TimeInterval = 30
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let output = try? runAndroidCommand(
+                adbURL,
+                arguments: ["-s", endpoint.serial, "shell", "dumpsys", "media.camera"],
+                environment: environment
+            ), mappedCameraDeviceCount(in: String(decoding: output, as: UTF8.self)) >= 2 {
+                return
+            }
+            guard process.isRunning else {
+                throw RelayError("Android AVD \(avdID) exited before its environment cameras became available.")
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        throw RelayError("Timed out waiting for both environment cameras in Android AVD \(avdID).")
+    }
+
     public func waitUntilExit() {
         exitGroup.wait()
     }
@@ -207,6 +228,13 @@ func emulatorEndpoint(from discovery: String) -> EmulatorControlEndpoint? {
           let token = values["grpc.token"], !token.isEmpty,
           let rawSerial = values["port.serial"], UInt16(rawSerial) != nil else { return nil }
     return EmulatorControlEndpoint(port: port, token: token, serial: "emulator-\(rawSerial)")
+}
+
+func mappedCameraDeviceCount(in cameraServiceDump: String) -> Int {
+    cameraServiceDump.split(whereSeparator: \Character.isNewline).count { line in
+        let text = line.trimmingCharacters(in: .whitespaces)
+        return text.hasPrefix("Device ") && text.contains(" maps to ")
+    }
 }
 
 private func runAndroidCommand(

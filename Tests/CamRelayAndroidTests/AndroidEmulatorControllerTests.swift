@@ -53,6 +53,17 @@ func parsesEmulatorDiscovery() {
     #expect(emulatorEndpoint(from: "grpc.port=55424\nport.serial=5554\n") == nil)
 }
 
+@Test("Counts app-visible Android camera mappings")
+func countsMappedAndroidCameras() {
+    #expect(mappedCameraDeviceCount(in: """
+      Device 0 maps to "10"
+      Device 1 maps to "11"
+      Device 10 is closed, no client instance
+    """) == 2)
+    #expect(mappedCameraDeviceCount(in: "Device 0 maps to \"10\"") == 1)
+    #expect(mappedCameraDeviceCount(in: "Device 10 is closed") == 0)
+}
+
 @Test("Encodes setEnvironment as a framed gRPC protobuf")
 func encodesEnvironmentRequest() {
     let request = grpcEnvironmentRequest(sceneMode: "imagefile:/x")

@@ -11,7 +11,8 @@ After building the runtime and CLI, source-build commands run from the repositor
 ```sh
 .build/debug/camrelay path/to/fixture.mp4
 .build/debug/camrelay path/to/fixture.png
-.build/debug/camrelay --platform android --avd Pixel_10 path/to/fixture.mp4
+AVD_NAME=your_avd_name
+.build/debug/camrelay --platform android --avd "$AVD_NAME" path/to/fixture.mp4
 ```
 
 The iOS Simulator backend is complete. Android Emulator supports image and video fixtures, live named-fixture switching, replay, and owned AVD lifecycle. Shared code must remain portable without depending on Apple-only frameworks.
@@ -37,7 +38,7 @@ The iOS Simulator backend is complete. Android Emulator supports image and video
 - `CamRelayAndroid`: Android SDK discovery, AVD lifecycle, environment-camera activation, and authenticated emulator control.
 - `CamRelayRuntime`: Objective-C runtime loaded into an iOS Simulator app to expose and deliver a synthetic camera feed.
 - `CamRelayProbe`: validation app that uses standard AVFoundation APIs and has no dependency on CamRelay.
-- `CamRelayExpo`: Expo development-build example that validates the preview through `react-native-vision-camera`.
+- `CamRelayExpo`: Expo example that validates front/back preview and photo capture through `react-native-vision-camera` on both virtual-device platforms.
 
 Add a new platform module when its first working behavior is implemented. Do not add empty modules solely to represent planned architecture.
 
@@ -80,7 +81,7 @@ The transport keeps fixture paths outside the app sandbox and media decoding out
 
 ## Validation
 
-The validation app must use standard AVFoundation camera discovery and capture APIs and must not import or link CamRelay-specific code.
+Validation apps must use standard platform camera discovery and capture APIs and must not import or link CamRelay-specific code.
 
 Functional validation scenarios:
 
@@ -96,6 +97,7 @@ Functional validation scenarios:
 10. The Expo example discovers the synthetic cameras, starts its VisionCamera preview, and visibly renders changing video frames.
 11. Named image and video fixtures with different dimensions and frame rates switch without relaunching either example app. Use generated colors, checkerboard, and moving-shapes fixtures. Capture checks include JPEG metadata export and front/back camera reconfiguration in both directions.
 12. Replay, pause, resume, readiness, delivery acknowledgements, failed selection, and stop work through CLI commands. Paused feeds continue delivering samples; failed selection preserves the previous source.
+13. On Android, the Expo example validates front/back VisionCamera preview and photo capture, image and video orientation, source-speed looping, live selection without an app restart, and exact AVD cleanup.
 
 ### Validation Scope
 
@@ -104,7 +106,7 @@ Start with the smallest test or check that directly covers the changed behavior.
 - Documentation-only changes require review of the affected text plus applicable formatting or link checks. They do not require builds or Simulator runs unless the documented command or behavior must be verified.
 - Isolated core or CLI changes require the relevant filtered test or test target first. Expand to the full unit-test suite only when shared behavior or interfaces may be affected.
 - Changes to one camera surface or media path require the corresponding probe scenario first. Add other surfaces or fixture types only when they share the changed implementation.
-- Changes confined to the Expo example start with `npm run typecheck`. Run its Simulator scenario only when native camera behavior or the displayed video path changes, and run the native probe first only when the underlying AVFoundation runtime also changes.
+- Changes confined to the Expo example start with `npm run typecheck`. Run the relevant virtual-device scenario only when native camera behavior or the displayed video path changes, and run the native probe first only when the underlying AVFoundation runtime also changes.
 - Architecture or build-script changes require checks for the affected artifacts and architectures, without requiring unrelated camera scenarios.
 - Simulator activation, cleanup, transport, concurrency, or shared frame-pipeline changes require the affected end-to-end scenarios because they can influence multiple apps or outputs.
 
@@ -139,7 +141,10 @@ swift build
 swift test
 ./scripts/build-probe.sh
 ./scripts/generate-fixtures.sh
-cd Examples/CamRelayExpo && npm run typecheck
+npm --prefix Examples/CamRelayExpo run typecheck
+npm --prefix Examples/CamRelayExpo run android:validation-build
+AVD_NAME=your_avd_name
+./scripts/validate-android.sh "$AVD_NAME"
 ```
 
 The build and fixture scripts create disposable artifacts under `.build`. Generated artifacts are not source files and must not be committed.
@@ -148,7 +153,7 @@ The build and fixture scripts create disposable artifacts under `.build`. Genera
 
 - Runtime and validation-app build scripts emit universal arm64 and x86_64 iOS Simulator binaries.
 - x86_64 Simulator execution on Apple Silicon requires the macOS translation component.
-- Video preferred-transform metadata is not applied yet, so some portrait recordings may appear rotated.
+- The iOS decoder does not apply video preferred-transform metadata yet, so some portrait recordings may appear rotated there.
 - Apple-only frameworks must remain confined to the iOS adapter and runtime targets.
 
 ## Working Rules
