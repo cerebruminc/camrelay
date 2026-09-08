@@ -140,8 +140,8 @@ preview_signature() {
   bottom=$4
   width=$((right - left))
   height=$((bottom - top))
-  x1=$((left + width / 20))
-  x2=$((left + width * 19 / 20))
+  x1=$((left + width / 4))
+  x2=$((left + width * 3 / 4))
   y1=$((top + height / 4))
   y2=$((top + height * 3 / 4))
   screenshot="$RUN_DIR/preview.png"

@@ -37,7 +37,7 @@ swift build
 
 If only one AVD exists, omit `--avd`. CamRelay finds the SDK through `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or the standard macOS SDK location. The selected AVD must not already be running because the environment camera mode is chosen at emulator startup.
 
-The emulator exposes both cameras through standard Android camera APIs. CamRelay controls it through an ephemeral, token-protected gRPC endpoint restricted to localhost. It temporarily installs the initial fixture in the AVD's `environment.ini`, then restores the previous file after the owned emulator exits. Ctrl-C, SIGTERM, and `camrelay stop` stop the emulator and restore its configuration.
+The emulator exposes both cameras through standard Android camera APIs. CamRelay controls it through an ephemeral, token-protected gRPC endpoint restricted to localhost. It prepares temporary copies of fixtures so the emulator's environment-camera framing shows the complete image or video without cropping. It temporarily installs the initial prepared fixture in the AVD's `environment.ini`, then removes the temporary media and restores the previous file after the owned emulator exits. Ctrl-C, SIGTERM, and `camrelay stop` stop the emulator and restore its configuration.
 
 Named fixtures can switch without restarting the emulator or app:
 
@@ -54,7 +54,7 @@ AVD_NAME=your_avd_name
 .build/debug/camrelay status --session demo --json
 ```
 
-The Android Emulator loops videos at their source cadence and applies their orientation metadata. CamRelay supports `select`, `replay`, `next`, `previous`, `status`, `wait`, and `stop` for Android. Pause/play, `--paused`, and `--wait-for-frame` are not available because the emulator environment camera does not expose those controls or app delivery acknowledgements. Android status therefore reports selection and generation, while source position, output format, and receiver counts remain zero. Android Emulator 36.6.11 is the currently validated version.
+CamRelay preserves video cadence and orientation while preparing it, and the Android Emulator loops the result. CamRelay supports `select`, `replay`, `next`, `previous`, `status`, `wait`, and `stop` for Android. Pause/play, `--paused`, and `--wait-for-frame` are not available because the emulator environment camera does not expose those controls or app delivery acknowledgements. Android status therefore reports selection and generation, while source position, output format, and receiver counts remain zero. Android Emulator 36.6.11 is the currently validated version.
 
 The repeatable Android check uses the included Expo VisionCamera app. It verifies front/back discovery, preview, photo capture, image and video orientation, video cadence and looping, live fixture switching without an app restart, failed-selection preservation, and AVD cleanup:
 
@@ -159,7 +159,7 @@ From another terminal, or from a test runner:
 
 On iOS, use `--paused` on select, replay, next, or previous to hold the replacement's first frame. Pausing holds the image but keeps camera samples and their timestamps advancing. A failed file load leaves the previous source selected on either platform.
 
-On iOS, the first fixture determines the camera format for the whole session. This example keeps the initial video's 320×240, 15 fps output when switching to the 1280×720, 24 fps clip or the portrait image. The Android Emulator owns its camera format, fitting, orientation, and playback cadence.
+On iOS, the first fixture determines the camera format for the whole session. This example keeps the initial video's 320×240, 15 fps output when switching to the 1280×720, 24 fps clip or the portrait image. On Android, CamRelay fits each source into the emulator's environment-camera viewport; the emulator owns the camera format and playback loop.
 
 ### CI orchestration
 

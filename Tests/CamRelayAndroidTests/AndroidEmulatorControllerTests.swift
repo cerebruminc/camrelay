@@ -1,6 +1,9 @@
 @testable import CamRelayAndroid
 import CamRelayCore
+import CoreGraphics
+import CoreImage
 import Foundation
+import ImageIO
 import Testing
 
 @Test("Finds the Android SDK and resolves an AVD directory")
@@ -178,6 +181,47 @@ func removesCreatedAVDEnvironment() throws {
     #expect(!FileManager.default.fileExists(atPath: environmentURL.path))
 }
 
+@Test("Prepares the complete image inside the Android environment camera window")
+func preparesAndroidImageForFullFrame() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("camrelay-android-image-preparation-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("red.png")
+    try writeSolidPNG(to: source, width: 160, height: 120)
+
+    let preparer = try AndroidMediaPreparer()
+    let prepared = try preparer.prepare(MediaFixture(path: source.path))
+    #expect(prepared.url != source)
+    #expect(prepared.kind == .image)
+    #expect(try preparer.prepare(MediaFixture(path: source.path)) == prepared)
+
+    guard let image = CIImage(contentsOf: prepared.url) else {
+        Issue.record("Could not read prepared image")
+        return
+    }
+    #expect(image.extent.size == CGSize(width: 160, height: 120))
+    let red = pixel(at: CGPoint(x: 20, y: 60), in: image)
+    #expect(red[0] > 240 && red[1] < 50 && red[2] < 20 && red[3] == 255)
+    #expect(pixel(at: CGPoint(x: 150, y: 60), in: image) == [0, 0, 0, 255])
+    #expect(pixel(at: CGPoint(x: 20, y: 30), in: image) == [0, 0, 0, 255])
+    #expect(pixel(at: CGPoint(x: 20, y: 5), in: image) == [0, 0, 0, 255])
+
+    let preparedPath = prepared.url.path
+    preparer.cleanup()
+    #expect(!FileManager.default.fileExists(atPath: preparedPath))
+}
+
+@Test("Defines the fixed Android environment camera window")
+func calculatesAndroidEnvironmentCameraWindow() {
+    #expect(androidEnvironmentVisibleRect(in: CGRect(x: 0, y: 0, width: 160, height: 120))
+        == CGRect(x: 0, y: 26.25, width: 90, height: 67.5))
+    #expect(androidFittedContentRect(
+        sourceAspectRatio: 9.0 / 16.0,
+        in: CGRect(x: 0, y: 0, width: 90, height: 120)
+    ) == CGRect(x: 11.25, y: 0, width: 67.5, height: 120))
+}
+
 private final class AndroidSDKFixture {
     let root: URL
     let sdkRoot: URL
@@ -221,6 +265,38 @@ private final class AndroidSDKFixture {
     func remove() {
         try? FileManager.default.removeItem(at: root)
     }
+}
+
+private func writeSolidPNG(to url: URL, width: Int, height: Int) throws {
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard let context = CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+        space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        throw RelayError("Could not create test image context.")
+    }
+    context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    guard let image = context.makeImage(),
+          let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+        throw RelayError("Could not create test PNG.")
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else { throw RelayError("Could not write test PNG.") }
+}
+
+private func pixel(at point: CGPoint, in image: CIImage) -> [UInt8] {
+    let context = CIContext(options: [.cacheIntermediates: false])
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    var value = [UInt8](repeating: 0, count: 4)
+    value.withUnsafeMutableBytes { bytes in
+        context.render(
+            image, toBitmap: bytes.baseAddress!, rowBytes: 4,
+            bounds: CGRect(origin: point, size: CGSize(width: 1, height: 1)),
+            format: .RGBA8, colorSpace: colorSpace
+        )
+    }
+    return value
 }
 
 private final class AndroidMediaFixture {

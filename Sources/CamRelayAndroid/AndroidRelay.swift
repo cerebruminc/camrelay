@@ -10,6 +10,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
     private let avdLease: RelayLease
     private let sessionName: String
     private let playback: AndroidPlaybackController
+    private let mediaPreparer: AndroidMediaPreparer
     private let cleanupLock = NSLock()
     private var cleanedUp = false
     private var stopStarted = false
@@ -21,7 +22,8 @@ public final class AndroidRelaySession: @unchecked Sendable {
         environmentFile: AVDEnvironmentFile,
         avdLease: RelayLease,
         sessionName: String,
-        playback: AndroidPlaybackController
+        playback: AndroidPlaybackController,
+        mediaPreparer: AndroidMediaPreparer
     ) {
         self.device = device
         self.serial = serial
@@ -30,6 +32,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
         self.avdLease = avdLease
         self.sessionName = sessionName
         self.playback = playback
+        self.mediaPreparer = mediaPreparer
     }
 
     public func stop() {
@@ -94,6 +97,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
         guard !cleanedUp else { return }
         stopStarted = true
         emulator.stop()
+        defer { mediaPreparer.cleanup() }
         try environmentFile.restore()
         cleanedUp = true
     }
@@ -127,7 +131,19 @@ public struct AndroidRelay {
         let device = try controller.selectAVD(named: options.androidAVD)
         try RelayCommand.validateName(device.id, kind: "AVD name")
         let lease = try RelayLease(key: "android-\(device.id)")
-        let environmentFile = try AVDEnvironmentFile(avdDirectory: device.directoryURL, media: initial.media)
+        let mediaPreparer = try AndroidMediaPreparer()
+        let preparedInitial: MediaFixture
+        do { preparedInitial = try mediaPreparer.prepare(initial.media) }
+        catch {
+            mediaPreparer.cleanup()
+            throw error
+        }
+        let environmentFile: AVDEnvironmentFile
+        do { environmentFile = try AVDEnvironmentFile(avdDirectory: device.directoryURL, media: preparedInitial) }
+        catch {
+            mediaPreparer.cleanup()
+            throw error
+        }
         var emulator: AndroidEmulatorProcess?
 
         do {
@@ -136,10 +152,11 @@ public struct AndroidRelay {
             let endpoint = try launched.waitForControl()
             try launched.waitUntilBooted(endpoint: endpoint)
             try launched.waitUntilEnvironmentCamerasAvailable(endpoint: endpoint)
-            try controlClient.setMedia(initial.media, alternatePath: true, endpoint: endpoint)
+            try controlClient.setMedia(preparedInitial, alternatePath: true, endpoint: endpoint)
             let client = controlClient
             let playback = AndroidPlaybackController(fixtures: fixtures, initial: initial.name) { media, alternatePath in
-                try client.setMedia(media, alternatePath: alternatePath, endpoint: endpoint)
+                let prepared = try mediaPreparer.prepare(media)
+                try client.setMedia(prepared, alternatePath: alternatePath, endpoint: endpoint)
             }
             return AndroidRelaySession(
                 device: device,
@@ -148,11 +165,13 @@ public struct AndroidRelay {
                 environmentFile: environmentFile,
                 avdLease: lease,
                 sessionName: options.session,
-                playback: playback
+                playback: playback,
+                mediaPreparer: mediaPreparer
             )
         } catch {
             let startupError = error
             emulator?.stop()
+            defer { mediaPreparer.cleanup() }
             do { try environmentFile.restore() }
             catch {
                 throw RelayError("\(startupError.localizedDescription) Cleanup also failed: \(error.localizedDescription)")
