@@ -5,8 +5,9 @@ public final class AndroidRelaySession: @unchecked Sendable {
     public let device: AndroidVirtualDevice
     public let serial: String
 
-    private let emulator: AndroidEmulatorProcess
-    private let environmentFile: AVDEnvironmentFile
+    private let emulator: AndroidEmulatorConnection
+    private let idleSceneMode: String
+    private let controlClient: EmulatorControlClient
     private let avdLease: RelayLease
     private let sessionName: String
     private let playback: AndroidPlaybackController
@@ -18,8 +19,9 @@ public final class AndroidRelaySession: @unchecked Sendable {
     init(
         device: AndroidVirtualDevice,
         serial: String,
-        emulator: AndroidEmulatorProcess,
-        environmentFile: AVDEnvironmentFile,
+        emulator: AndroidEmulatorConnection,
+        idleSceneMode: String,
+        controlClient: EmulatorControlClient,
         avdLease: RelayLease,
         sessionName: String,
         playback: AndroidPlaybackController,
@@ -28,7 +30,8 @@ public final class AndroidRelaySession: @unchecked Sendable {
         self.device = device
         self.serial = serial
         self.emulator = emulator
-        self.environmentFile = environmentFile
+        self.idleSceneMode = idleSceneMode
+        self.controlClient = controlClient
         self.avdLease = avdLease
         self.sessionName = sessionName
         self.playback = playback
@@ -96,10 +99,22 @@ public final class AndroidRelaySession: @unchecked Sendable {
         defer { cleanupLock.unlock() }
         guard !cleanedUp else { return }
         stopStarted = true
-        emulator.stop()
-        defer { mediaPreparer.cleanup() }
-        try environmentFile.restore()
+        var resetError: Error?
+        do {
+            try playback.stop {
+                if emulator.isRunning {
+                    try controlClient.setSceneMode(idleSceneMode, endpoint: emulator.endpoint)
+                }
+            }
+        } catch {
+            if emulator.isRunning { resetError = error }
+        }
         cleanedUp = true
+        if let resetError {
+            let directory = mediaPreparer.leaveFilesInPlace()
+            throw RelayError("\(resetError.localizedDescription) Temporary media remains at \(directory.path).")
+        }
+        mediaPreparer.cleanup()
     }
 }
 
@@ -131,6 +146,14 @@ public struct AndroidRelay {
         let device = try controller.selectAVD(named: options.androidAVD)
         try RelayCommand.validateName(device.id, kind: "AVD name")
         let lease = try RelayLease(key: "android-\(device.id)")
+        let emulator: AndroidEmulatorConnection
+        do { emulator = try controller.runningConnection(for: device) }
+        catch AndroidEmulatorControllerError.notRunning {
+            throw RelayError("Android AVD \(device.id) is not running with CamRelay camera support. Start it with `camrelay emulator start --platform android --avd \(device.id)`.")
+        }
+        try emulator.waitUntilBooted()
+        try emulator.waitUntilEnvironmentCamerasAvailable()
+        let environmentFile = try AVDEnvironmentFile(avdDirectory: device.directoryURL)
         let mediaPreparer = try AndroidMediaPreparer()
         let preparedInitial: MediaFixture
         do { preparedInitial = try mediaPreparer.prepare(initial.media) }
@@ -138,31 +161,20 @@ public struct AndroidRelay {
             mediaPreparer.cleanup()
             throw error
         }
-        let environmentFile: AVDEnvironmentFile
-        do { environmentFile = try AVDEnvironmentFile(avdDirectory: device.directoryURL, media: preparedInitial) }
-        catch {
-            mediaPreparer.cleanup()
-            throw error
-        }
-        var emulator: AndroidEmulatorProcess?
 
         do {
-            let launched = try controller.launch(device)
-            emulator = launched
-            let endpoint = try launched.waitForControl()
-            try launched.waitUntilBooted(endpoint: endpoint)
-            try launched.waitUntilEnvironmentCamerasAvailable(endpoint: endpoint)
-            try controlClient.setMedia(preparedInitial, alternatePath: true, endpoint: endpoint)
+            try controlClient.setMedia(preparedInitial, alternatePath: true, endpoint: emulator.endpoint)
             let client = controlClient
             let playback = AndroidPlaybackController(fixtures: fixtures, initial: initial.name) { media, alternatePath in
                 let prepared = try mediaPreparer.prepare(media)
-                try client.setMedia(prepared, alternatePath: alternatePath, endpoint: endpoint)
+                try client.setMedia(prepared, alternatePath: alternatePath, endpoint: emulator.endpoint)
             }
             return AndroidRelaySession(
                 device: device,
-                serial: endpoint.serial,
-                emulator: launched,
-                environmentFile: environmentFile,
+                serial: emulator.endpoint.serial,
+                emulator: emulator,
+                idleSceneMode: environmentFile.sceneMode,
+                controlClient: controlClient,
                 avdLease: lease,
                 sessionName: options.session,
                 playback: playback,
@@ -170,12 +182,16 @@ public struct AndroidRelay {
             )
         } catch {
             let startupError = error
-            emulator?.stop()
-            defer { mediaPreparer.cleanup() }
-            do { try environmentFile.restore() }
-            catch {
-                throw RelayError("\(startupError.localizedDescription) Cleanup also failed: \(error.localizedDescription)")
+            do {
+                if emulator.isRunning {
+                    try controlClient.setSceneMode(environmentFile.sceneMode, endpoint: emulator.endpoint)
+                }
             }
+            catch {
+                let directory = mediaPreparer.leaveFilesInPlace()
+                throw RelayError("\(startupError.localizedDescription) Cleanup also failed: \(error.localizedDescription) Temporary media remains at \(directory.path).")
+            }
+            mediaPreparer.cleanup()
             throw startupError
         }
     }
@@ -204,6 +220,7 @@ final class AndroidPlaybackController: @unchecked Sendable {
     private let commandLock = NSLock()
     private let stateLock = NSLock()
     private var state: State
+    private var stopped = false
 
     init(
         fixtures: [AndroidFixture],
@@ -229,6 +246,7 @@ final class AndroidPlaybackController: @unchecked Sendable {
     func apply(_ request: RelayControlRequest) throws -> UInt64 {
         commandLock.lock()
         defer { commandLock.unlock() }
+        guard !stopped else { throw RelayError("Android relay has stopped.") }
         guard !request.paused else { throw RelayError("Android pause support is not available yet.") }
         guard !request.waitForFrame else {
             throw RelayError("Android does not provide app delivery acknowledgements for --wait-for-frame yet.")
@@ -273,5 +291,13 @@ final class AndroidPlaybackController: @unchecked Sendable {
             state.alternatePath = alternatePath
             return state.generation
         }
+    }
+
+    func stop(reset: () throws -> Void) throws {
+        commandLock.lock()
+        defer { commandLock.unlock() }
+        guard !stopped else { return }
+        stopped = true
+        try reset()
     }
 }

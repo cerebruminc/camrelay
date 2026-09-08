@@ -1,6 +1,6 @@
 # Architecture
 
-CamRelay supplies media fixtures as camera input to apps running in virtual mobile devices. The iOS backend loads a runtime into Simulator app processes and backs synthetic AVFoundation objects with timed frames from the macOS CLI. The Android backend launches an AVD with the emulator's environment cameras and selects image or video fixtures through authenticated emulator control.
+CamRelay supplies media fixtures as camera input to apps running in virtual mobile devices. The iOS backend loads a runtime into Simulator app processes and backs synthetic AVFoundation objects with timed frames from the macOS CLI. The Android backend has explicit AVD lifecycle commands and selects image or video fixtures through authenticated emulator control.
 
 Work is split between the macOS host and Simulator app processes:
 
@@ -77,7 +77,7 @@ The CLI owns one frame server. Each app process loads its own runtime and opens 
 | `CamRelayCore` | macOS, portable Swift | Validates fixtures and commands, defines control messages, and maps camera time to source position. |
 | `CamRelayCLI` | macOS | Parses commands, manages terminal keys and signal handling, starts the relay, and reports status or errors. |
 | `CamRelayIOS` | macOS | Finds the Simulator runtime, decodes media, runs the frame server, and controls Simulator activation. |
-| `CamRelayAndroid` | macOS | Finds the Android SDK and AVD, owns emulator startup and shutdown, and controls its environment camera. |
+| `CamRelayAndroid` | macOS | Finds the Android SDK and AVD, provides explicit emulator lifecycle commands, and controls its environment camera. |
 | `CamRelayRuntime` | iOS Simulator app process | Exposes synthetic AVFoundation behavior and converts incoming frames into camera samples. |
 | `CamRelayProbe` | iOS Simulator app process | Exercises common AVFoundation camera surfaces without importing or linking CamRelay. |
 | `CamRelayExpo` | iOS Simulator app process | Checks the same feed through the included React Native camera example. |
@@ -131,9 +131,9 @@ If Simulator activation fails after the server starts, `IOSRelay` stops the serv
 
 ## Android lifecycle
 
-`camrelay --platform android` selects the only AVD or the one named by `--avd`. It backs up the AVD's `environment.ini`, writes the initial image or video, and launches the emulator with front and back environment cameras. The emulator chooses an ephemeral localhost gRPC port and generates a bearer token in its private discovery file. CamRelay reads that file, waits for Android to finish booting and publish both camera mappings through `adb`, then sends `setEnvironment` with the token.
+`camrelay emulator start --platform android` selects the only AVD or the one named by `--avd`, then launches it with front and back environment cameras. The emulator chooses an ephemeral localhost gRPC port and generates a bearer token in its private discovery file. CamRelay waits for Android to finish booting and publish both camera mappings through `adb`, then leaves the emulator running.
 
-The Android session owns the emulator process it starts. `stop`, Ctrl-C, and SIGTERM interrupt that process, wait for it to exit, and restore the exact previous `environment.ini` contents and permissions. If startup fails, the same cleanup runs before the error is returned.
+`camrelay --platform android` attaches to that running AVD by reading the private discovery file and authenticating to its localhost endpoint. It never starts or stops the emulator and never rewrites `environment.ini`. `stop`, Ctrl-C, and SIGTERM restore the idle scene recorded in `environment.ini` and remove prepared fixture media while leaving the emulator and app processes running. `camrelay emulator stop --platform android` shuts down the selected AVD explicitly. A rebuilt relay can therefore attach without an emulator restart.
 
 Named selection, replay, next, and previous commands send another `setEnvironment` request over the same authenticated endpoint. The emulator changes both environment cameras without restarting the emulator or app, loops video at the source cadence, and applies video orientation metadata. Because the emulator ignores an unchanged scene-mode string, the controller alternates between two equivalent forms of the media path so replay reloads the same file. CamRelay commits the new selection and generation only after the control request succeeds. Android does not expose pause/resume or app frame acknowledgements through this camera path, so pause/play, `--paused`, and `--wait-for-frame` remain iOS-only.
 
@@ -508,7 +508,7 @@ The example shows a camera preview, takes photos, counts completed captures, and
 
 The fixture generator creates a changing-color video, a static checkerboard, and a moving-shapes video for the multi-fixture example. Their different dimensions and frame rates exercise image/video switching and aspect fitting. A portrait quadrant image and a landscape-encoded video with rotation metadata provide unambiguous orientation checks. Additional solid-color, portrait, 720p, and 1080p fixtures support focused media checks. All media is generated locally, and build artifacts remain outside source control.
 
-`scripts/validate-android.sh` owns one stopped AVD for an end-to-end run. It installs the Expo release build and checks front/back preview, photo capture, live selection, orientation, video cadence and looping, failed-selection preservation, app-process continuity, emulator shutdown, and exact restoration of the AVD camera configuration.
+`scripts/validate-android.sh` starts one stopped AVD with the lifecycle command for an end-to-end run. It installs the Expo release build and checks front/back preview, photo capture, live selection, orientation, video cadence and looping, failed-selection preservation, relay shutdown with AVD and app-process continuity, unchanged AVD configuration, and explicit emulator shutdown.
 
 ## Extension boundaries
 

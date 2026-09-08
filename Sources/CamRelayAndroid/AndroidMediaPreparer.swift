@@ -72,6 +72,14 @@ final class AndroidMediaPreparer: @unchecked Sendable {
         }
     }
 
+    func leaveFilesInPlace() -> URL {
+        lock.withLock {
+            cleanedUp = true
+            cache.removeAll()
+            return directory
+        }
+    }
+
     private func fingerprint(for url: URL) throws -> Fingerprint {
         let attributes = try fileManager.attributesOfItem(atPath: url.path)
         return Fingerprint(

@@ -25,19 +25,22 @@ After [building from source](#build-and-run-from-source), run it from the reposi
 
 ## Android Emulator
 
-The Android backend accepts image and video fixtures and launches the selected Android Virtual Device with front and back environment cameras enabled:
+The Android backend accepts image and video fixtures. Start the selected Android Virtual Device once with front and back environment cameras, then attach and stop relay processes without restarting it:
 
 ```sh
 CAMRELAY_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
 "$CAMRELAY_SDK/emulator/emulator" -list-avds
 AVD_NAME=your_avd_name
 swift build
+.build/debug/camrelay emulator start --platform android --avd "$AVD_NAME"
 .build/debug/camrelay --platform android --avd "$AVD_NAME" .build/fixtures/checkerboard.png
+# Stop the relay with Ctrl-C, q, or `camrelay stop`, then stop the AVD when finished:
+.build/debug/camrelay emulator stop --platform android --avd "$AVD_NAME"
 ```
 
-If only one AVD exists, omit `--avd`. CamRelay finds the SDK through `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or the standard macOS SDK location. The selected AVD must not already be running because the environment camera mode is chosen at emulator startup.
+If only one AVD exists, omit `--avd`. CamRelay finds the SDK through `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or the standard macOS SDK location. `emulator start` requires the selected AVD to be stopped. Relay runs require that AVD to have been started with this command.
 
-The emulator exposes both cameras through standard Android camera APIs. CamRelay controls it through an ephemeral, token-protected gRPC endpoint restricted to localhost. It prepares temporary copies of fixtures so the emulator's environment-camera framing shows the complete image or video without cropping. It temporarily installs the initial prepared fixture in the AVD's `environment.ini`, then removes the temporary media and restores the previous file after the owned emulator exits. Ctrl-C, SIGTERM, and `camrelay stop` stop the emulator and restore its configuration.
+The emulator exposes both cameras through standard Android camera APIs. CamRelay controls it through an ephemeral, token-protected gRPC endpoint restricted to localhost. It prepares temporary copies of fixtures so the emulator's environment-camera framing shows the complete image or video without cropping. Ctrl-C, SIGTERM, and `camrelay stop` restore the AVD's idle scene and remove temporary media, but leave the emulator and app running. Only `emulator stop` shuts down the AVD. This lets a rebuilt CamRelay attach to the same emulator without forcing an app or emulator restart.
 
 Named fixtures can switch without restarting the emulator or app:
 
@@ -56,7 +59,7 @@ AVD_NAME=your_avd_name
 
 CamRelay preserves video cadence and orientation while preparing it, and the Android Emulator loops the result. CamRelay supports `select`, `replay`, `next`, `previous`, `status`, `wait`, and `stop` for Android. Pause/play, `--paused`, and `--wait-for-frame` are not available because the emulator environment camera does not expose those controls or app delivery acknowledgements. Android status therefore reports selection and generation, while source position, output format, and receiver counts remain zero. Android Emulator 36.6.11 is the currently validated version.
 
-The repeatable Android check uses the included Expo VisionCamera app. It verifies front/back discovery, preview, photo capture, image and video orientation, video cadence and looping, live fixture switching without an app restart, failed-selection preservation, and AVD cleanup:
+The repeatable Android check uses the included Expo VisionCamera app. It verifies front/back discovery, preview, photo capture, image and video orientation, video cadence and looping, live fixture switching without an app restart, failed-selection preservation, relay shutdown without emulator or app shutdown, and explicit AVD cleanup:
 
 ```sh
 ./scripts/generate-fixtures.sh
@@ -68,7 +71,7 @@ AVD_NAME=your_avd_name
 ./scripts/validate-android.sh "$AVD_NAME"
 ```
 
-The script requires `adb`, `jq`, ImageMagick, `rg`, and `xmllint`. It owns the stopped AVD for the run and leaves its logs under `.build/validation`.
+The script requires `adb`, `jq`, ImageMagick, `rg`, and `xmllint`. It starts and stops the AVD with the separate lifecycle commands and leaves its logs under `.build/validation`.
 
 ## Build and run from source
 
@@ -312,7 +315,7 @@ CamRelay CLI
 
 - `CamRelayCore` owns portable fixture validation, command models, and playback-clock state.
 - `CamRelayIOS` owns Simulator selection, Simulator-wide activation, media decoding, and the local frame server.
-- `CamRelayAndroid` owns AVD selection, emulator lifecycle, environment-camera activation, and authenticated emulator control.
+- `CamRelayAndroid` provides AVD selection, explicit emulator lifecycle commands, environment-camera activation, and authenticated emulator control.
 - `CamRelayRuntime` is an Objective-C dynamic library built for iOS Simulator. It exposes synthetic front and back cameras and implements the common AVFoundation capture surfaces.
 - `CamRelayProbe` validates the standard AVFoundation path independently.
 - `CamRelayExpo` validates the same feed through Expo and `react-native-vision-camera`.

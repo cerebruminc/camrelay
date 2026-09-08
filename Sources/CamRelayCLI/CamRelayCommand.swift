@@ -10,6 +10,7 @@ CamRelay supplies an image or video as a virtual mobile-device camera feed.
 Usage:
   camrelay [--platform ios|android] <media-file>
   camrelay run [--platform ios|android] --session <name> --fixture <name=path> [--fixture <name=path> ...]
+  camrelay emulator start|stop --platform android [--avd <name>]
   camrelay select <fixture-name> [--session <name>] [--paused] [--wait-for-frame]
   camrelay replay|next|previous [--session <name>] [--paused] [--wait-for-frame]
   camrelay pause|play [--session <name>] [--wait-for-frame]
@@ -21,6 +22,10 @@ Run options:
   --initial <fixture-name>   Choose the first fixture (default: first listed).
   --paused                   Hold the initial frame until play (iOS only).
   --no-interactive           Disable terminal controls (automatic without a TTY).
+
+Emulator options:
+  --platform android         Manage an Android Emulator separately from a relay.
+  --avd <name>              Choose an Android Virtual Device (automatic when only one exists).
 
 Control options:
   --session <name>           Address a running session (default: default).
@@ -34,9 +39,11 @@ Interactive keys: 1-9 select, n next, b previous, r replay, q stop; space pauses
 Examples:
   camrelay ./fixtures/checkerboard.png
   camrelay ./fixtures/colors.mp4
-  camrelay --platform android --avd Pixel_10 ./fixtures/checkerboard.png
+  camrelay emulator start --platform android --avd "$AVD_NAME"
+  camrelay --platform android --avd "$AVD_NAME" ./fixtures/checkerboard.png
+  camrelay emulator stop --platform android --avd "$AVD_NAME"
   camrelay run --session demo --fixture colors=colors.mp4 --fixture pattern=checkerboard.png
-  camrelay run --platform android --avd Pixel_10 --session demo --fixture colors=colors.mp4 --fixture pattern=checkerboard.png
+  camrelay run --platform android --avd "$AVD_NAME" --session demo --fixture colors=colors.mp4 --fixture pattern=checkerboard.png
   camrelay select pattern --session demo --wait-for-frame --timeout 10s
 """
 
@@ -52,6 +59,7 @@ struct CamRelayCommand {
             switch command {
             case .help: print(usage)
             case .version: print("camrelay 0.1.0-dev")
+            case .emulator(let options): try manageEmulator(options)
             case .run(let options): try await run(options)
             case .control(let name, let request, let json, let wait):
                 let response = try RelayControlClient.send(request, session: name, waitForReady: wait)
@@ -60,6 +68,20 @@ struct CamRelayCommand {
             }
         } catch {
             fail(error.localizedDescription, json: arguments.contains("--json"))
+        }
+    }
+
+    private static func manageEmulator(_ options: EmulatorCommandOptions) throws {
+        let lifecycle = try AndroidEmulatorLifecycle()
+        let status: AndroidEmulatorStatus
+        switch options.action {
+        case .start:
+            status = try lifecycle.start(avd: options.androidAVD)
+            print("Android AVD \(status.device.id) is ready as \(status.serial).")
+            print("CamRelay can now attach without restarting the emulator.")
+        case .stop:
+            status = try lifecycle.stop(avd: options.androidAVD)
+            print("Stopped Android AVD \(status.device.id) (\(status.serial)).")
         }
     }
 
@@ -116,6 +138,7 @@ struct CamRelayCommand {
 
         print("CamRelay session \(options.session) is ready in Android AVD \(session.device.id) (\(session.serial)).")
         print("Apps use the fixture through standard Android camera APIs; no app changes are needed.")
+        print("Stopping CamRelay leaves the Android emulator running.")
         printResponse(RelayControlResponse(status: session.status()), json: false)
 
         let terminal: TerminalControls?

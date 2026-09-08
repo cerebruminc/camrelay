@@ -12,10 +12,12 @@ After building the runtime and CLI, source-build commands run from the repositor
 .build/debug/camrelay path/to/fixture.mp4
 .build/debug/camrelay path/to/fixture.png
 AVD_NAME=your_avd_name
+.build/debug/camrelay emulator start --platform android --avd "$AVD_NAME"
 .build/debug/camrelay --platform android --avd "$AVD_NAME" path/to/fixture.mp4
+.build/debug/camrelay emulator stop --platform android --avd "$AVD_NAME"
 ```
 
-The iOS Simulator backend is complete. Android Emulator supports image and video fixtures, live named-fixture switching, replay, and owned AVD lifecycle. Shared code must remain portable without depending on Apple-only frameworks.
+The iOS Simulator backend is complete. Android Emulator supports image and video fixtures, live named-fixture switching, replay, and separate AVD lifecycle commands. Shared code must remain portable without depending on Apple-only frameworks.
 
 ## Product Requirements
 
@@ -50,7 +52,7 @@ The iOS runtime is enabled in the booted Simulator's launch environment for the 
 
 Ctrl-C and SIGTERM remove every relay value from the Simulator launch environment and stop the frame server. Control connections notify already-loaded runtimes that the relay ended without transferring app lifecycle ownership to the CLI. Signal handling and cleanup must remain reliable when multiple apps and worker threads are active.
 
-The Android backend launches a stopped AVD with front and back environment cameras. It uses the emulator's ephemeral, token-protected localhost gRPC endpoint, temporarily updates the AVD's `environment.ini`, and switches image or video fixtures through the same endpoint. Stopping the relay shuts down only the emulator process it launched, then restores the prior file. Android apps continue to use standard camera APIs without CamRelay integration. Pause/play and app delivery acknowledgements are not available through this emulator camera path.
+`camrelay emulator start --platform android` launches a stopped AVD with front and back environment cameras and an ephemeral, token-protected localhost gRPC endpoint. Android relay runs attach to that endpoint and switch image or video fixtures without owning the emulator. Stopping a relay restores the idle scene and removes its temporary media while leaving the AVD and apps running. `camrelay emulator stop --platform android` owns AVD shutdown. Android apps continue to use standard camera APIs without CamRelay integration. Pause/play and app delivery acknowledgements are not available through this emulator camera path.
 
 ## Camera Compatibility
 
@@ -97,7 +99,7 @@ Functional validation scenarios:
 10. The Expo example discovers the synthetic cameras, starts its VisionCamera preview, and visibly renders changing video frames.
 11. Named image and video fixtures with different dimensions and frame rates switch without relaunching either example app. Use generated colors, checkerboard, and moving-shapes fixtures. Capture checks include JPEG metadata export and front/back camera reconfiguration in both directions.
 12. Replay, pause, resume, readiness, delivery acknowledgements, failed selection, and stop work through CLI commands. Paused feeds continue delivering samples; failed selection preserves the previous source.
-13. On Android, the Expo example validates front/back VisionCamera preview and photo capture, image and video orientation, source-speed looping, live selection without an app restart, and exact AVD cleanup.
+13. On Android, the Expo example validates front/back VisionCamera preview and photo capture, image and video orientation, source-speed looping, live selection without an app restart, relay shutdown without AVD or app shutdown, and explicit AVD cleanup.
 
 ### Validation Scope
 

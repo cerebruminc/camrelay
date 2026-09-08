@@ -27,6 +27,22 @@ public struct RelayRunOptions: Equatable, Sendable {
     public init() {}
 }
 
+public enum EmulatorAction: String, Equatable, Sendable {
+    case start, stop
+}
+
+public struct EmulatorCommandOptions: Equatable, Sendable {
+    public let action: EmulatorAction
+    public let platform: RelayPlatform
+    public let androidAVD: String?
+
+    public init(action: EmulatorAction, platform: RelayPlatform, androidAVD: String?) {
+        self.action = action
+        self.platform = platform
+        self.androidAVD = androidAVD
+    }
+}
+
 public enum RelayAction: String, Codable, Sendable {
     case select, replay, pause, play, next, previous, status, stop
 }
@@ -128,6 +144,7 @@ public struct RelayError: LocalizedError, Equatable, Sendable {
 public enum RelayCommand: Equatable, Sendable {
     case help
     case version
+    case emulator(EmulatorCommandOptions)
     case run(RelayRunOptions)
     case control(session: String, request: RelayControlRequest, json: Bool, waitForReady: Bool)
 
@@ -141,6 +158,9 @@ public enum RelayCommand: Equatable, Sendable {
         }
         if arguments[0] == "wait" {
             return try parseControl(Array(arguments.dropFirst()), action: .status, waitForReady: true)
+        }
+        if arguments[0] == "emulator" {
+            return .emulator(try parseEmulator(Array(arguments.dropFirst())))
         }
         return .run(try parseRun(arguments[0] == "run" ? Array(arguments.dropFirst()) : arguments))
     }
@@ -207,6 +227,43 @@ public enum RelayCommand: Equatable, Sendable {
             throw RelayError("Unknown initial fixture: \(initial)")
         }
         return options
+    }
+
+    private static func parseEmulator(_ arguments: [String]) throws -> EmulatorCommandOptions {
+        guard let rawAction = arguments.first, let action = EmulatorAction(rawValue: rawAction) else {
+            throw RelayError("Emulator requires start or stop.")
+        }
+
+        var platform: RelayPlatform?
+        var androidAVD: String?
+        var index = 1
+        while index < arguments.count {
+            let argument = arguments[index]
+            index += 1
+            switch argument {
+            case "--platform":
+                let rawPlatform = try value(arguments, index: &index, option: argument)
+                guard let parsed = RelayPlatform(rawValue: rawPlatform) else {
+                    throw RelayError("Unknown platform: \(rawPlatform). Expected ios or android.")
+                }
+                platform = parsed
+            case "--avd":
+                androidAVD = try value(arguments, index: &index, option: argument)
+            default:
+                throw RelayError("Unexpected argument: \(argument)")
+            }
+        }
+
+        guard let platform else {
+            throw RelayError("Emulator start and stop require --platform android.")
+        }
+        guard platform == .android else {
+            throw RelayError("Emulator start and stop currently support only --platform android.")
+        }
+        if let androidAVD {
+            try validateName(androidAVD, kind: "AVD name")
+        }
+        return EmulatorCommandOptions(action: action, platform: platform, androidAVD: androidAVD)
     }
 
     private static func parseControl(

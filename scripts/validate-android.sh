@@ -1,5 +1,5 @@
 #!/bin/sh
-# End-to-end Android check. Owns the relay, emulator, and validation app.
+# End-to-end Android check. Starts and stops the emulator separately from the relay.
 set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -32,6 +32,7 @@ RUN_DIR=$(mktemp -d "$PROJECT_DIR/.build/validation/android.XXXXXX")
 SESSION="android-validation-$$"
 RELAY_PID=
 SERIAL=
+EMULATOR_STARTED=false
 
 AVD_HOME=${ANDROID_AVD_HOME:-$HOME/.android/avd}
 AVD_INI="$AVD_HOME/$AVD.ini"
@@ -52,6 +53,9 @@ cleanup() {
   if [ -n "$RELAY_PID" ]; then
     control stop >/dev/null 2>&1 || kill -TERM "$RELAY_PID" 2>/dev/null || true
     wait "$RELAY_PID" 2>/dev/null || true
+  fi
+  if [ "$EMULATOR_STARTED" = true ]; then
+    .build/debug/camrelay emulator stop --platform android --avd "$AVD" >/dev/null 2>&1 || true
   fi
   echo "Validation artifacts: $RUN_DIR"
 }
@@ -211,6 +215,10 @@ sample_video_timing() {
   ' "$samples"
 }
 
+.build/debug/camrelay emulator start --platform android --avd "$AVD" \
+  >"$RUN_DIR/emulator-start.log" 2>&1
+EMULATOR_STARTED=true
+
 .build/debug/camrelay run --platform android --avd "$AVD" --session "$SESSION" \
   --no-interactive \
   --fixture pattern=.build/fixtures/checkerboard.png \
@@ -273,12 +281,8 @@ control stop >/dev/null
 wait "$RELAY_PID"
 RELAY_PID=
 
-attempts=0
-while "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1; do
-  attempts=$((attempts + 1))
-  [ "$attempts" -lt 60 ] || { echo "Emulator did not stop." >&2; exit 1; }
-  sleep 0.25
-done
+test "$("$ADB" -s "$SERIAL" get-state)" = device
+test "$("$ADB" -s "$SERIAL" shell pidof "$APP_ID")" = "$APP_PID"
 
 if [ "$ORIGINAL_ENVIRONMENT" = missing ]; then
   test ! -e "$ENVIRONMENT_FILE"
@@ -287,4 +291,8 @@ else
   test "$(stat -f '%Lp' "$ENVIRONMENT_FILE")" = "$ORIGINAL_PERMISSIONS"
 fi
 
-echo "PASS: Android image/video preview, source timing, orientation, front/back preview, photo capture, switching, and cleanup"
+.build/debug/camrelay emulator stop --platform android --avd "$AVD" \
+  >"$RUN_DIR/emulator-stop.log" 2>&1
+EMULATOR_STARTED=false
+
+echo "PASS: Android image/video preview, source timing, orientation, front/back preview, photo capture, switching, separate relay shutdown, and emulator cleanup"

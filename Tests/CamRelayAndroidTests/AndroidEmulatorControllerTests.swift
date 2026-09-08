@@ -54,6 +54,39 @@ func parsesEmulatorDiscovery() {
     """)
     #expect(endpoint == EmulatorControlEndpoint(port: 55424, token: "private-token", serial: "emulator-5554"))
     #expect(emulatorEndpoint(from: "grpc.port=55424\nport.serial=5554\n") == nil)
+    #expect(emulatorEndpoint(from: "grpc.port=55424\ngrpc.token=private-token\nport.serial=5554\n") == nil)
+}
+
+@Test("Attaches to a running AVD through its private discovery file")
+func discoversRunningAndroidAVD() throws {
+    let fixture = try AndroidSDKFixture()
+    defer { fixture.remove() }
+    let avdDirectory = try fixture.addAVD("Test_AVD")
+    let runningDirectory = fixture.root
+        .appendingPathComponent("Library/Caches/TemporaryItems/avd/running")
+    try FileManager.default.createDirectory(at: runningDirectory, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: runningDirectory.path)
+    let discoveryURL = runningDirectory.appendingPathComponent("pid_\(getpid()).ini")
+    try Data("""
+    avd.id=Test_AVD
+    port.serial=5554
+    grpc.port=55424
+    grpc.token=private-token
+    """.utf8).write(to: discoveryURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: discoveryURL.path)
+
+    let controller = AndroidEmulatorController(
+        sdk: try AndroidSDK(environment: fixture.environment),
+        environment: fixture.environment,
+        listRunner: { Data("Test_AVD\n".utf8) }
+    )
+    let connection = try controller.runningConnection(for: AndroidVirtualDevice(
+        id: "Test_AVD", directoryURL: avdDirectory
+    ))
+    #expect(connection.endpoint == EmulatorControlEndpoint(
+        port: 55424, token: "private-token", serial: "emulator-5554"
+    ))
+    #expect(connection.processIdentifier == getpid())
 }
 
 @Test("Counts app-visible Android camera mappings")
@@ -146,38 +179,46 @@ func rejectsUnsupportedAndroidControls() throws {
     }
 }
 
-@Test("Restores an AVD environment file after the relay")
-func restoresAVDEnvironment() throws {
+@Test("Stops Android playback before restoring the idle scene")
+func stopsAndroidPlayback() throws {
+    let fixture = try AndroidMediaFixture()
+    defer { fixture.remove() }
+    let playback = try makePlayback(fixture: fixture) { _, _ in }
+    var restored = false
+
+    try playback.stop { restored = true }
+
+    #expect(restored)
+    #expect(throws: RelayError.self) {
+        _ = try playback.apply(RelayControlRequest(action: .replay))
+    }
+}
+
+@Test("Reads the AVD idle scene without changing its environment file")
+func readsAVDEnvironment() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("camrelay-android-environment-test-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let environmentURL = root.appendingPathComponent("environment.ini")
-    let original = Data("scene.mode = none\n".utf8)
+    let original = Data("scene.mode = imagefile:/existing/image.png\n".utf8)
     try original.write(to: environmentURL)
-    let imageURL = root.appendingPathComponent("fixture with spaces.png")
-    try Data().write(to: imageURL)
 
-    let managed = try AVDEnvironmentFile(avdDirectory: root, media: try MediaFixture(path: imageURL.path))
-    #expect(String(decoding: try Data(contentsOf: environmentURL), as: UTF8.self)
-        == "scene.mode = imagefile:\(imageURL.path)\n")
-    try managed.restore()
+    let environment = try AVDEnvironmentFile(avdDirectory: root)
+    #expect(environment.sceneMode == "imagefile:/existing/image.png")
     #expect(try Data(contentsOf: environmentURL) == original)
 }
 
-@Test("Removes a newly created AVD environment file after the relay")
-func removesCreatedAVDEnvironment() throws {
+@Test("Uses an empty idle scene without creating an AVD environment file")
+func defaultsMissingAVDEnvironment() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("camrelay-android-new-environment-test-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let environmentURL = root.appendingPathComponent("environment.ini")
-    let imageURL = root.appendingPathComponent("fixture.png")
-    try Data().write(to: imageURL)
 
-    let managed = try AVDEnvironmentFile(avdDirectory: root, media: try MediaFixture(path: imageURL.path))
-    #expect(FileManager.default.fileExists(atPath: environmentURL.path))
-    try managed.restore()
+    let environment = try AVDEnvironmentFile(avdDirectory: root)
+    #expect(environment.sceneMode == "none")
     #expect(!FileManager.default.fileExists(atPath: environmentURL.path))
 }
 

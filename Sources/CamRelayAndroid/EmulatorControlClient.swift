@@ -19,6 +19,10 @@ struct EmulatorControlClient: Sendable {
         alternatePath: Bool = false,
         endpoint: EmulatorControlEndpoint
     ) throws {
+        try setSceneMode(androidSceneMode(for: media, alternatePath: alternatePath), endpoint: endpoint)
+    }
+
+    func setSceneMode(_ sceneMode: String, endpoint: EmulatorControlEndpoint) throws {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: curlURL.path) else {
             throw RelayError("curl is required to control Android Emulator but was not found at \(curlURL.path).")
@@ -26,7 +30,7 @@ struct EmulatorControlClient: Sendable {
 
         let requestURL = fileManager.temporaryDirectory
             .appendingPathComponent("camrelay-android-request-\(UUID().uuidString)")
-        try grpcEnvironmentRequest(sceneMode: androidSceneMode(for: media, alternatePath: alternatePath))
+        try grpcEnvironmentRequest(sceneMode: sceneMode)
             .write(to: requestURL, options: [.atomic])
         defer { try? fileManager.removeItem(at: requestURL) }
 

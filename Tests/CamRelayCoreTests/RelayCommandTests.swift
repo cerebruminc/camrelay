@@ -23,6 +23,20 @@ func parsesAndroidCommand() throws {
     #expect(options.fixtures == [NamedFixture(name: "fixture-1", path: "camera.png")])
 }
 
+@Test("Parses separate Android emulator lifecycle commands")
+func parsesAndroidEmulatorCommands() throws {
+    #expect(try RelayCommand.parse([
+        "emulator", "start", "--platform", "android", "--avd", "Pixel_10",
+    ]) == .emulator(EmulatorCommandOptions(
+        action: .start, platform: .android, androidAVD: "Pixel_10"
+    )))
+    #expect(try RelayCommand.parse([
+        "emulator", "stop", "--platform", "android",
+    ]) == .emulator(EmulatorCommandOptions(
+        action: .stop, platform: .android, androidAVD: nil
+    )))
+}
+
 @Test("Parses named fixtures, initial selection, and headless playback")
 func parsesNamedFixtures() throws {
     guard case .run(let options) = try RelayCommand.parse([
@@ -57,6 +71,10 @@ func parsesControl() throws {
     ["run", "--unknown"], ["run", "--avd", "Pixel_10", "a.png"],
     ["--platform", "android", "--avd", "../escape", "a.png"],
     ["--platform", "windows", "a.png"],
+    ["emulator"], ["emulator", "restart", "--platform", "android"],
+    ["emulator", "start"], ["emulator", "start", "--platform", "ios"],
+    ["emulator", "start", "--platform", "android", "--avd", "../escape"],
+    ["emulator", "stop", "--platform", "android", "extra"],
 ])
 func rejectsBadCommands(arguments: [String]) {
     #expect(throws: RelayError.self) { try RelayCommand.parse(arguments) }

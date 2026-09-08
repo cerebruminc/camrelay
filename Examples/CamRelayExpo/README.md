@@ -56,13 +56,20 @@ Start CamRelay with a video fixture:
 .build/debug/camrelay /absolute/path/to/fixture.mp4
 ```
 
-For Android, select a stopped AVD:
+For Android, select a stopped AVD, start it once, then attach a relay:
 
 ```sh
 CAMRELAY_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
 "$CAMRELAY_SDK/emulator/emulator" -list-avds
 AVD_NAME=your_avd_name
+.build/debug/camrelay emulator start --platform android --avd "$AVD_NAME"
 .build/debug/camrelay --platform android --avd "$AVD_NAME" /absolute/path/to/fixture.mp4
+```
+
+Stopping the relay leaves the emulator and app running. When finished with the AVD, stop it explicitly:
+
+```sh
+.build/debug/camrelay emulator stop --platform android --avd "$AVD_NAME"
 ```
 
 Relaunch **CamRelay Expo** after the relay starts. The example must show:
@@ -127,7 +134,7 @@ The app logs `[CameraExample] <camera-position> captured <width>x<height> path=<
 
 The fixtures are generated locally. `colors.mp4` cycles through red, green, and blue at 320×240 and 15 fps. `checkerboard.png` is a 480×640 portrait image. `moving-shapes.mp4` has a moving red circle and green square at 1280×720 and 24 fps. Both videos loop every three seconds. This session keeps the first video's 320×240, 15 fps camera format, fits the other fixtures without cropping, and preserves their playback speed.
 
-For Android, omit `--paused` and `--wait-for-frame`, add `--platform android --avd <name>` to the `run` command, and use the same `select`, `replay`, `next`, and `previous` commands. The emulator applies source orientation metadata and loops video at its source cadence.
+For Android, start the AVD with `camrelay emulator start --platform android --avd <name>`, omit `--paused` and `--wait-for-frame`, add `--platform android --avd <name>` to the `run` command, and use the same `select`, `replay`, `next`, and `previous` commands. The emulator applies source orientation metadata and loops video at its source cadence. Stop the AVD separately with `camrelay emulator stop --platform android --avd <name>`.
 
 ## Repeatable Android validation
 
@@ -143,6 +150,6 @@ AVD_NAME=your_avd_name
 ./scripts/validate-android.sh "$AVD_NAME"
 ```
 
-The script launches and owns the AVD, installs the release example, and checks front/back discovery, preview, photo capture, fixture switching, static and rotated orientation patterns, three-color video cadence and looping, app-process continuity, failed-selection preservation, emulator shutdown, and exact `environment.ini` restoration. It requires `adb`, `jq`, ImageMagick, `rg`, and `xmllint`; artifacts stay under `.build/validation`.
+The script starts and stops the AVD with separate lifecycle commands, installs the release example, and checks front/back discovery, preview, photo capture, fixture switching, static and rotated orientation patterns, three-color video cadence and looping, app-process continuity after relay shutdown, failed-selection preservation, unchanged `environment.ini`, and explicit emulator shutdown. It requires `adb`, `jq`, ImageMagick, `rg`, and `xmllint`; artifacts stay under `.build/validation`.
 
 Start validation with `npm run typecheck` and `npm test` from `Examples/CamRelayExpo`. The tests cover capture progress, review navigation, repeated captures, file URLs, duplicate actions, and failure recovery without a native camera. Preview or native changes also require the relevant virtual-device scenario.
