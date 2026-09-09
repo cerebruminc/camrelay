@@ -169,11 +169,16 @@ private final class VideoFrameReader {
     private let imageContext: CIContext
     private let colorSpace: CGColorSpace
     private let sourceStartTime: CMTime
+    private let sourceTimeRange: CMTimeRange
     private let loopDurationNanoseconds: UInt64
     private var reader: AVAssetReader?
     private var output: AVAssetReaderTrackOutput?
     private var pendingFrame: MediaFrame?
     private var loopOffsetNanoseconds: UInt64 = 0
+
+    deinit {
+        reader?.cancelReading()
+    }
 
     init(url: URL) async throws {
         asset = AVURLAsset(url: url)
@@ -193,6 +198,7 @@ private final class VideoFrameReader {
         let framesPerSecond = max(1, min(60, Int(fps > 0 ? fps : 30)))
 
         let assetDuration = try await asset.load(.duration)
+        sourceTimeRange = CMTimeRange(start: .zero, duration: assetDuration)
 
         var configuredReader: AVAssetReader?
         var configuredOutput: AVAssetReaderTrackOutput?
@@ -248,7 +254,7 @@ private final class VideoFrameReader {
         }
 
         loopOffsetNanoseconds += loopDurationNanoseconds
-        try configureReader()
+        try resetReaderAfterEnd()
         guard let frame = try Self.copyFrame(
             from: output,
             geometry: displayGeometry,
@@ -269,6 +275,18 @@ private final class VideoFrameReader {
     private func configureReader() throws {
         reader?.cancelReading()
         try Self.configureReader(asset: asset, track: track, reader: &reader, output: &output)
+    }
+
+    private func resetReaderAfterEnd() throws {
+        guard let reader, let output else {
+            throw MediaFrameSourceError.readerConfigurationFailed
+        }
+        if reader.status == .failed {
+            throw reader.error ?? MediaFrameSourceError.readerConfigurationFailed
+        }
+        output.reset(forReadingTimeRanges: [
+            NSValue(timeRange: sourceTimeRange),
+        ])
     }
 
     private func makeFrame(from frame: RawVideoFrame) -> MediaFrame {
@@ -295,6 +313,7 @@ private final class VideoFrameReader {
             ]
         )
         newOutput.alwaysCopiesSampleData = false
+        newOutput.supportsRandomAccess = true
         guard newReader.canAdd(newOutput) else {
             throw MediaFrameSourceError.readerConfigurationFailed
         }
@@ -312,54 +331,56 @@ private final class VideoFrameReader {
         context: CIContext,
         colorSpace: CGColorSpace
     ) throws -> RawVideoFrame? {
-        guard let sampleBuffer = output?.copyNextSampleBuffer() else {
-            return nil
-        }
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            throw MediaFrameSourceError.missingPixelBuffer
-        }
-
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-
-        let width = geometry.width
-        let height = geometry.height
-        let bytesPerRow = width * 4
-        var data = Data(count: bytesPerRow * height)
-        if geometry.transform.isIdentity,
-           width == CVPixelBufferGetWidth(pixelBuffer),
-           height == CVPixelBufferGetHeight(pixelBuffer) {
-            guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+        try autoreleasepool {
+            guard let sampleBuffer = output?.copyNextSampleBuffer() else {
+                return nil
+            }
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
                 throw MediaFrameSourceError.missingPixelBuffer
             }
-            let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-            data.withUnsafeMutableBytes { destination in
-                for row in 0..<height {
-                    let sourceRow = baseAddress.advanced(by: row * sourceBytesPerRow)
-                    let destinationRow = destination.baseAddress!.advanced(by: row * bytesPerRow)
-                    destinationRow.copyMemory(from: sourceRow, byteCount: bytesPerRow)
+
+            CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+            let width = geometry.width
+            let height = geometry.height
+            let bytesPerRow = width * 4
+            var data = Data(count: bytesPerRow * height)
+            if geometry.transform.isIdentity,
+               width == CVPixelBufferGetWidth(pixelBuffer),
+               height == CVPixelBufferGetHeight(pixelBuffer) {
+                guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+                    throw MediaFrameSourceError.missingPixelBuffer
+                }
+                let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+                data.withUnsafeMutableBytes { destination in
+                    for row in 0..<height {
+                        let sourceRow = baseAddress.advanced(by: row * sourceBytesPerRow)
+                        let destinationRow = destination.baseAddress!.advanced(by: row * bytesPerRow)
+                        destinationRow.copyMemory(from: sourceRow, byteCount: bytesPerRow)
+                    }
+                }
+            } else {
+                let image = CIImage(cvPixelBuffer: pixelBuffer).transformed(by: geometry.transform)
+                data.withUnsafeMutableBytes { destination in
+                    context.render(
+                        image,
+                        toBitmap: destination.baseAddress!,
+                        rowBytes: bytesPerRow,
+                        bounds: CGRect(x: 0, y: 0, width: width, height: height),
+                        format: .BGRA8,
+                        colorSpace: colorSpace
+                    )
                 }
             }
-        } else {
-            let image = CIImage(cvPixelBuffer: pixelBuffer).transformed(by: geometry.transform)
-            data.withUnsafeMutableBytes { destination in
-                context.render(
-                    image,
-                    toBitmap: destination.baseAddress!,
-                    rowBytes: bytesPerRow,
-                    bounds: CGRect(x: 0, y: 0, width: width, height: height),
-                    format: .BGRA8,
-                    colorSpace: colorSpace
-                )
-            }
+            return RawVideoFrame(
+                data: data,
+                width: width,
+                height: height,
+                presentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
+                duration: CMSampleBufferGetDuration(sampleBuffer)
+            )
         }
-        return RawVideoFrame(
-            data: data,
-            width: width,
-            height: height,
-            presentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
-            duration: CMSampleBufferGetDuration(sampleBuffer)
-        )
     }
 
     private static func makeFrame(

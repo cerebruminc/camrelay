@@ -254,7 +254,9 @@ final class FrameServer: @unchecked Sendable {
                 index = max(index + 1, elapsedTime * fps / 1_000_000_000)
                 continue
             }
-            let frame = playback.frame(at: time, duration: duration)
+            let frame = autoreleasepool {
+                playback.frame(at: time, duration: duration)
+            }
             let clients = stateLock.withLock { Array(frameClients.values) }
             for client in clients { client.offer(frame) }
             index += 1
