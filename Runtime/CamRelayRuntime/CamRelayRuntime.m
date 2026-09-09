@@ -189,6 +189,14 @@ static size_t CamRelayFixtureHeight(void) {
     return (size_t)CamRelayEnvironmentInteger("CAMRELAY_HEIGHT", 720, 4096);
 }
 
+static size_t CamRelaySensorWidth(void) {
+    return CamRelayFixtureHeight();
+}
+
+static size_t CamRelaySensorHeight(void) {
+    return CamRelayFixtureWidth();
+}
+
 static int32_t CamRelayFixtureFramesPerSecond(void) {
     return (int32_t)CamRelayEnvironmentInteger("CAMRELAY_FPS", 30, 120);
 }
@@ -219,11 +227,14 @@ static CMVideoFormatDescriptionRef CamRelayFixtureFormatDescription(void) {
     static CMVideoFormatDescriptionRef formatDescription;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // Transport frames are display-upright. The default portrait connection
+        // delivers their inverse rotation as sensor-oriented video buffers, so
+        // the active camera format must describe those buffer dimensions.
         CMVideoFormatDescriptionCreate(
             kCFAllocatorDefault,
             kCVPixelFormatType_32BGRA,
-            (int32_t)CamRelayFixtureWidth(),
-            (int32_t)CamRelayFixtureHeight(),
+            (int32_t)CamRelaySensorWidth(),
+            (int32_t)CamRelaySensorHeight(),
             NULL,
             &formatDescription
         );
@@ -335,7 +346,7 @@ static AVFrameRateRange *CamRelayFrameRateRange(void) {
 - (AVFrameRateRange *)videoFrameRateRangeForBackgroundReplacement { return nil; }
 - (NSString *)description {
     return [NSString stringWithFormat:@"<CamRelay format %zux%zu @ %d fps>",
-        CamRelayFixtureWidth(), CamRelayFixtureHeight(), CamRelayFixtureFramesPerSecond()];
+        CamRelaySensorWidth(), CamRelaySensorHeight(), CamRelayFixtureFramesPerSecond()];
 }
 @end
 

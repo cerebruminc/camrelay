@@ -150,6 +150,8 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
 @property(nonatomic, copy) NSString *lastObservedColor;
 @property(nonatomic) NSUInteger colorTransitionCount;
 @property(nonatomic) BOOL compatibilityConfigured;
+@property(nonatomic) CMVideoDimensions activeVideoDimensions;
+@property(nonatomic) BOOL videoDimensionsValidated;
 @property(nonatomic) BOOL automaticPhotoRequested;
 @property(nonatomic) BOOL automaticRecordingStarted;
 @property(nonatomic) BOOL automaticRecordingStopped;
@@ -327,6 +329,7 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     self.photoButton.enabled = configured;
     self.recordButton.enabled = configured;
     self.compatibilityConfigured = configured;
+    self.activeVideoDimensions = dimensions;
 
     [self updateStatus:[NSString stringWithFormat:@"Camera: %@\n%@\nWaiting for frames…",
         device.localizedName,
@@ -437,6 +440,22 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     }
     size_t width = CVPixelBufferGetWidth(pixelBuffer);
     size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    if (!self.videoDimensionsValidated) {
+        self.videoDimensionsValidated = YES;
+        BOOL dimensionsMatch = width == (size_t)self.activeVideoDimensions.width &&
+            height == (size_t)self.activeVideoDimensions.height;
+        if (!dimensionsMatch) {
+            self.compatibilityConfigured = NO;
+        }
+        NSLog(
+            @"[CamRelayProbe] video dimensions format=%dx%d frame=%zux%zu match=%@",
+            self.activeVideoDimensions.width,
+            self.activeVideoDimensions.height,
+            width,
+            height,
+            dimensionsMatch ? @"yes" : @"no"
+        );
+    }
     NSUInteger count = self.frameCount;
     NSUInteger photos = self.photoCount;
     NSUInteger movies = self.movieCount;
