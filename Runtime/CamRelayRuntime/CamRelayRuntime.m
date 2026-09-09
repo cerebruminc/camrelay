@@ -70,6 +70,7 @@ static const void *CamRelayMetadataTimeKey = &CamRelayMetadataTimeKey;
 static const void *CamRelayMetadataCornersKey = &CamRelayMetadataCornersKey;
 static const void *CamRelayMovieRecorderKey = &CamRelayMovieRecorderKey;
 static const void *CamRelayMovieOutputSettingsKey = &CamRelayMovieOutputSettingsKey;
+static const void *CamRelayVideoFrameDeliveryKey = &CamRelayVideoFrameDeliveryKey;
 static NSString *const CamRelayConstructingCaptureOutputKey = @"CamRelayConstructingCaptureOutput";
 static const uint8_t CamRelayFrameClientRole = 0x46; // F
 static const uint8_t CamRelayControlClientRole = 0x43; // C
@@ -1525,7 +1526,161 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
 @property(atomic) uint64_t generation;
 - (void)startWithSession:(AVCaptureSession *)session;
 - (void)stop;
+- (BOOL)isStopped;
 @end
+
+@interface CamRelayPendingVideoFrame : NSObject
+@property(nonatomic, weak, readonly) CamRelayFrameEmitter *emitter;
+@property(nonatomic, weak, readonly) AVCaptureVideoDataOutput *output;
+@property(nonatomic, weak, readonly) id<AVCaptureVideoDataOutputSampleBufferDelegate> delegate;
+@property(nonatomic, weak, readonly) AVCaptureConnection *connection;
+@property(nonatomic, strong, readonly) dispatch_queue_t callbackQueue;
+@property(nonatomic, readonly) CMSampleBufferRef sampleBuffer;
+@property(nonatomic, readonly) uint64_t generation;
+- (instancetype)initWithSampleBuffer:(CMSampleBufferRef)sampleBuffer
+                             emitter:(CamRelayFrameEmitter *)emitter
+                              output:(AVCaptureVideoDataOutput *)output
+                            delegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
+                          connection:(AVCaptureConnection *)connection
+                       callbackQueue:(dispatch_queue_t)callbackQueue
+                          generation:(uint64_t)generation;
+- (void)deliver;
+@end
+
+@implementation CamRelayPendingVideoFrame {
+    CMSampleBufferRef _sampleBuffer;
+}
+
+- (instancetype)initWithSampleBuffer:(CMSampleBufferRef)sampleBuffer
+                             emitter:(CamRelayFrameEmitter *)emitter
+                              output:(AVCaptureVideoDataOutput *)output
+                            delegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
+                          connection:(AVCaptureConnection *)connection
+                       callbackQueue:(dispatch_queue_t)callbackQueue
+                          generation:(uint64_t)generation {
+    self = [super init];
+    if (self != nil) {
+        _sampleBuffer = (CMSampleBufferRef)CFRetain(sampleBuffer);
+        _emitter = emitter;
+        _output = output;
+        _delegate = delegate;
+        _connection = connection;
+        _callbackQueue = callbackQueue;
+        _generation = generation;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_sampleBuffer != NULL) {
+        CFRelease(_sampleBuffer);
+    }
+}
+
+- (void)deliver {
+    CamRelayFrameEmitter *emitter = self.emitter;
+    AVCaptureVideoDataOutput *output = self.output;
+    id<AVCaptureVideoDataOutputSampleBufferDelegate> delegate = self.delegate;
+    AVCaptureConnection *connection = self.connection;
+    if (emitter == nil || output == nil || delegate == nil || connection == nil ||
+        emitter.generation != self.generation || emitter.isStopped) {
+        return;
+    }
+    [delegate captureOutput:output
+        didOutputSampleBuffer:self.sampleBuffer
+        fromConnection:connection];
+}
+
+@end
+
+/// Keeps video-data delivery at one executing callback plus one latest pending frame.
+@interface CamRelayVideoFrameDelivery : NSObject
+- (void)offerFrame:(CamRelayPendingVideoFrame *)frame;
+- (void)cancelPendingFrame;
+@end
+
+@implementation CamRelayVideoFrameDelivery {
+    CamRelayPendingVideoFrame *_pendingFrame;
+    BOOL _deliveryScheduled;
+    BOOL _cancelled;
+}
+
+- (void)offerFrame:(CamRelayPendingVideoFrame *)frame {
+    BOOL shouldSchedule = NO;
+    @synchronized(self) {
+        if (_cancelled) {
+            return;
+        }
+        if (_deliveryScheduled) {
+            _pendingFrame = frame;
+        } else {
+            _deliveryScheduled = YES;
+            shouldSchedule = YES;
+        }
+    }
+    if (shouldSchedule) {
+        [self scheduleFrame:frame];
+    }
+}
+
+- (void)scheduleFrame:(CamRelayPendingVideoFrame *)frame {
+    dispatch_async(frame.callbackQueue, ^{
+        BOOL cancelled = NO;
+        @synchronized(self) {
+            cancelled = self->_cancelled;
+        }
+        if (!cancelled) {
+            @autoreleasepool {
+                [frame deliver];
+            }
+        }
+        [self didFinishFrame];
+    });
+}
+
+- (void)didFinishFrame {
+    CamRelayPendingVideoFrame *next = nil;
+    @synchronized(self) {
+        if (!_cancelled) {
+            next = _pendingFrame;
+        }
+        _pendingFrame = nil;
+        if (next == nil) {
+            _deliveryScheduled = NO;
+        }
+    }
+    if (next != nil) {
+        [self scheduleFrame:next];
+    }
+}
+
+- (void)cancelPendingFrame {
+    @synchronized(self) {
+        _cancelled = YES;
+        _pendingFrame = nil;
+    }
+}
+
+@end
+
+static void CamRelayCancelVideoFrameDeliveries(AVCaptureSession *session) {
+    for (AVCaptureOutput *output in CamRelayMutableArray(session, CamRelaySyntheticOutputsKey)) {
+        if (![output isKindOfClass:AVCaptureVideoDataOutput.class]) {
+            continue;
+        }
+        CamRelayVideoFrameDelivery *delivery = objc_getAssociatedObject(
+            output,
+            CamRelayVideoFrameDeliveryKey
+        );
+        [delivery cancelPendingFrame];
+        objc_setAssociatedObject(
+            output,
+            CamRelayVideoFrameDeliveryKey,
+            nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
+    }
+}
 
 @implementation CamRelayFrameEmitter
 
@@ -1694,14 +1849,51 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
             if (outputSample == NULL) {
                 continue;
             }
-            dispatch_async(callbackQueue, ^{
-                if (self.generation == generation && ![self isStopped]) {
-                    [delegate captureOutput:videoOutput
-                        didOutputSampleBuffer:outputSample
-                        fromConnection:connection];
+            if (videoOutput.alwaysDiscardsLateVideoFrames) {
+                CamRelayVideoFrameDelivery *delivery = objc_getAssociatedObject(
+                    videoOutput,
+                    CamRelayVideoFrameDeliveryKey
+                );
+                if (delivery == nil) {
+                    delivery = [[CamRelayVideoFrameDelivery alloc] init];
+                    objc_setAssociatedObject(
+                        videoOutput,
+                        CamRelayVideoFrameDeliveryKey,
+                        delivery,
+                        OBJC_ASSOCIATION_RETAIN_NONATOMIC
+                    );
                 }
+                CamRelayPendingVideoFrame *frame = [[CamRelayPendingVideoFrame alloc]
+                    initWithSampleBuffer:outputSample
+                    emitter:self
+                    output:videoOutput
+                    delegate:delegate
+                    connection:connection
+                    callbackQueue:callbackQueue
+                    generation:generation];
+                [delivery offerFrame:frame];
                 CFRelease(outputSample);
-            });
+            } else {
+                CamRelayVideoFrameDelivery *delivery = objc_getAssociatedObject(
+                    videoOutput,
+                    CamRelayVideoFrameDeliveryKey
+                );
+                [delivery cancelPendingFrame];
+                objc_setAssociatedObject(
+                    videoOutput,
+                    CamRelayVideoFrameDeliveryKey,
+                    nil,
+                    OBJC_ASSOCIATION_RETAIN_NONATOMIC
+                );
+                dispatch_sync(callbackQueue, ^{
+                    if (self.generation == generation && ![self isStopped]) {
+                        [delegate captureOutput:videoOutput
+                            didOutputSampleBuffer:outputSample
+                            fromConnection:connection];
+                    }
+                });
+                CFRelease(outputSample);
+            }
         } else if ([output isKindOfClass:AVCaptureMovieFileOutput.class]) {
             CamRelayMovieRecorder *recorder = objc_getAssociatedObject(output, CamRelayMovieRecorderKey);
             [recorder appendSampleBuffer:sampleBuffer];
@@ -2189,6 +2381,17 @@ static void CamRelayAddOutputWithNoConnections(
 static void (*OriginalRemoveOutput)(AVCaptureSession *, SEL, AVCaptureOutput *);
 static void CamRelayRemoveOutput(AVCaptureSession *session, SEL selector, AVCaptureOutput *output) {
     if ([CamRelayMutableArray(session, CamRelaySyntheticOutputsKey) containsObject:output]) {
+        CamRelayVideoFrameDelivery *delivery = objc_getAssociatedObject(
+            output,
+            CamRelayVideoFrameDeliveryKey
+        );
+        [delivery cancelPendingFrame];
+        objc_setAssociatedObject(
+            output,
+            CamRelayVideoFrameDeliveryKey,
+            nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
         [CamRelayMutableArray(session, CamRelaySyntheticOutputsKey) removeObject:output];
         AVCaptureConnection *connection = objc_getAssociatedObject(output, CamRelayOutputConnectionKey);
         if (connection != nil) {
@@ -2730,6 +2933,7 @@ static void CamRelayStopRunning(AVCaptureSession *session, SEL selector) {
             [layer willChangeValueForKey:@"previewing"];
         }
         [emitter stop];
+        CamRelayCancelVideoFrameDeliveries(session);
         dispatch_async(dispatch_get_main_queue(), ^{
             for (AVCaptureVideoPreviewLayer *layer in previewLayers) {
                 AVSampleBufferDisplayLayer *displayLayer = objc_getAssociatedObject(

@@ -143,6 +143,7 @@ swift build
 swift test
 ./scripts/build-probe.sh
 ./scripts/generate-fixtures.sh
+./scripts/validate-slow-video-callback.sh
 npm --prefix Examples/CamRelayExpo run typecheck
 npm --prefix Examples/CamRelayExpo run android:validation-build
 AVD_NAME=your_avd_name

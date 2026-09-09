@@ -253,10 +253,11 @@ The script installs the selected probe build, captures each fixture while switch
 ```sh
 sh scripts/validate-multifixture.sh arm64 TERM
 sh scripts/validate-multifixture.sh x86_64 INT
+./scripts/validate-slow-video-callback.sh
 python3 scripts/validate-terminal.py
 ```
 
-Logs remain under `.build/validation`. The probe stays open after the relay stops. The terminal test uses Python's standard library to check hotkeys and terminal restoration after quit, SIGINT, and SIGTERM. These scripts control only the validation app; CamRelay itself does not manage apps.
+Logs remain under `.build/validation`. The slow-callback test verifies that late video-data frames remain memory-bounded when an app cannot process frames in real time. The probe stays open after the relay stops. The terminal test uses Python's standard library to check hotkeys and terminal restoration after quit, SIGINT, and SIGTERM. These scripts control only the validation app; CamRelay itself does not manage apps.
 
 ## Expo VisionCamera example
 

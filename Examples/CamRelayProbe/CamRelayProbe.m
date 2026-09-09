@@ -248,7 +248,8 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     }
 
     AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
-    output.alwaysDiscardsLateVideoFrames = YES;
+    output.alwaysDiscardsLateVideoFrames =
+        ![NSProcessInfo.processInfo.arguments containsObject:@"--keep-late-video-frames"];
     dispatch_queue_t queue = dispatch_queue_create("org.camrelay.probe.frames", DISPATCH_QUEUE_SERIAL);
     [output setSampleBufferDelegate:self queue:queue];
 
@@ -408,6 +409,11 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
 - (void)captureOutput:(AVCaptureOutput *)output
     didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     fromConnection:(AVCaptureConnection *)connection {
+    // Exercise late-frame delivery without making normal probe runs slower.
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--slow-video-callback"]) {
+        [NSThread sleepForTimeInterval:0.5];
+        return;
+    }
     CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (pixelBuffer == NULL) {
         return;
