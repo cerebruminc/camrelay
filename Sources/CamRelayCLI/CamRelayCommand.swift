@@ -160,7 +160,7 @@ struct CamRelayCommand {
         } else if let error = response.error {
             FileHandle.standardError.write(Data("camrelay: \(error)\n".utf8))
         } else if let state = response.status {
-            print("[\(state.session)] \(state.selected) | \(state.paused ? "paused" : "playing") | generation \(state.generation) | receivers \(state.acknowledgedReceivers)/\(state.connectedReceivers)")
+            print("[\(state.session)] \(state.selected) | \(state.paused ? "paused" : "playing")")
             if let error = state.error { FileHandle.standardError.write(Data("camrelay: playback error: \(error)\n".utf8)) }
         }
     }
