@@ -574,7 +574,18 @@ static BOOL CamRelayProbeFormatSurfacesAreSafe(AVCaptureDeviceFormat *format) {
     didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
     fromConnection:(AVCaptureConnection *)connection {
     for (AVMetadataMachineReadableCodeObject *object in metadataObjects) {
-        NSLog(@"[CamRelayProbe] metadata type=%@ value=%@", object.type, object.stringValue);
+        BOOL cornersValid = object.corners.count == 4;
+        for (NSDictionary *corner in object.corners) {
+            CGPoint point;
+            if (![corner isKindOfClass:NSDictionary.class] ||
+                !CGPointMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)corner, &point)) {
+                cornersValid = NO;
+                break;
+            }
+        }
+        NSLog(@"[CamRelayProbe] metadata type=%@ value=%@ corners=%lu representation=%@",
+            object.type, object.stringValue, (unsigned long)object.corners.count,
+            cornersValid ? @"valid" : @"invalid");
     }
 }
 

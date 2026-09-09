@@ -1,5 +1,6 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <CoreImage/CoreImage.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
@@ -125,6 +126,73 @@ static BOOL WriteOrientationPNG(NSURL *url) {
     CGContextRelease(context);
     CGColorSpaceRelease(colorSpace);
     free(bytes);
+    return success;
+}
+
+static BOOL WriteQRCodePNG(NSURL *url) {
+    NSData *message = [@"camrelay-validation" dataUsingEncoding:NSUTF8StringEncoding];
+    CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
+    if (filter == nil) {
+        fprintf(stderr, "could not create QR filter\n");
+        return NO;
+    }
+    [filter setValue:message forKey:@"inputMessage"];
+    [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
+    CIImage *output = filter.outputImage;
+    if (output == nil) {
+        fprintf(stderr, "could not render QR filter output\n");
+        return NO;
+    }
+
+    CIContext *imageContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+    CGColorSpaceRef codeColorSpace = CGColorSpaceCreateDeviceRGB();
+    CGImageRef codeImage = [imageContext createCGImage:output
+                                              fromRect:output.extent
+                                                format:kCIFormatRGBA8
+                                            colorSpace:codeColorSpace];
+    CGColorSpaceRelease(codeColorSpace);
+    if (codeImage == NULL) {
+        fprintf(stderr, "could not create QR image for extent %.0fx%.0f\n",
+            output.extent.size.width, output.extent.size.height);
+        return NO;
+    }
+    const size_t scale = 16;
+    const size_t margin = 64;
+    size_t codeWidth = CGImageGetWidth(codeImage) * scale;
+    size_t codeHeight = CGImageGetHeight(codeImage) * scale;
+    size_t width = codeWidth + margin * 2;
+    size_t height = codeHeight + margin * 2;
+    size_t bytesPerRow = width * 4;
+    uint8_t *bytes = calloc(height, bytesPerRow);
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = bytes == NULL ? NULL : CGBitmapContextCreate(
+        bytes, width, height, 8, bytesPerRow, colorSpace,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
+    );
+    if (context != NULL) {
+        CGContextSetRGBFillColor(context, 1, 1, 1, 1);
+        CGContextFillRect(context, CGRectMake(0, 0, width, height));
+        CGContextSetInterpolationQuality(context, kCGInterpolationNone);
+        CGContextDrawImage(context, CGRectMake(margin, margin, codeWidth, codeHeight), codeImage);
+    }
+    CGImageRef image = context != NULL ? CGBitmapContextCreateImage(context) : NULL;
+    CGImageDestinationRef destination = image != NULL
+        ? CGImageDestinationCreateWithURL((__bridge CFURLRef)url, CFSTR("public.png"), 1, NULL)
+        : NULL;
+    BOOL success = destination != NULL;
+    if (destination != NULL) {
+        CGImageDestinationAddImage(destination, image, NULL);
+        success = CGImageDestinationFinalize(destination);
+        CFRelease(destination);
+    }
+    if (image != NULL) { CGImageRelease(image); }
+    if (context != NULL) { CGContextRelease(context); }
+    CGColorSpaceRelease(colorSpace);
+    free(bytes);
+    CGImageRelease(codeImage);
+    if (!success) {
+        fprintf(stderr, "could not write QR image\n");
+    }
     return success;
 }
 
@@ -293,7 +361,8 @@ int main(int argc, const char *argv[]) {
         NSURL *directoryURL = [NSURL fileURLWithPath:directory isDirectory:YES];
         if (!WritePNG([directoryURL URLByAppendingPathComponent:@"red.png"], NO) ||
             !WritePNG([directoryURL URLByAppendingPathComponent:@"checkerboard.png"], YES) ||
-            !WriteOrientationPNG([directoryURL URLByAppendingPathComponent:@"orientation.png"])) {
+            !WriteOrientationPNG([directoryURL URLByAppendingPathComponent:@"orientation.png"]) ||
+            !WriteQRCodePNG([directoryURL URLByAppendingPathComponent:@"qr.png"])) {
             fprintf(stderr, "could not create PNG fixtures\n");
             return 1;
         }

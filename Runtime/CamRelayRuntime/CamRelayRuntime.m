@@ -1302,11 +1302,17 @@ static void CamRelayDeliverPhotoRequest(CamRelayPhotoRequest *request, CMSampleB
 }
 - (CMTime)time { return [objc_getAssociatedObject(self, CamRelayMetadataTimeKey) CMTimeValue]; }
 - (CMTime)duration { return kCMTimeZero; }
-- (NSArray *)corners { return objc_getAssociatedObject(self, CamRelayMetadataCornersKey) ?: @[]; }
+- (NSArray<NSDictionary *> *)corners {
+    return objc_getAssociatedObject(self, CamRelayMetadataCornersKey) ?: @[];
+}
 @end
 
 static NSValue *CamRelayValueWithRect(CGRect rect) {
     return [NSValue value:&rect withObjCType:@encode(CGRect)];
+}
+
+static NSDictionary *CamRelayDictionaryWithPoint(CGPoint point) {
+    return CFBridgingRelease(CGPointCreateDictionaryRepresentation(point));
 }
 
 static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sampleBuffer) {
@@ -1341,10 +1347,10 @@ static NSArray<AVMetadataObject *> *CamRelayMetadataObjects(CMSampleBufferRef sa
             CGRectGetHeight(featureBounds) / height
         );
         NSArray *corners = @[
-            CamRelayValueWithPoint(CGPointMake(code.topLeft.x / width, 1.0 - code.topLeft.y / height)),
-            CamRelayValueWithPoint(CGPointMake(code.topRight.x / width, 1.0 - code.topRight.y / height)),
-            CamRelayValueWithPoint(CGPointMake(code.bottomRight.x / width, 1.0 - code.bottomRight.y / height)),
-            CamRelayValueWithPoint(CGPointMake(code.bottomLeft.x / width, 1.0 - code.bottomLeft.y / height)),
+            CamRelayDictionaryWithPoint(CGPointMake(code.topLeft.x / width, 1.0 - code.topLeft.y / height)),
+            CamRelayDictionaryWithPoint(CGPointMake(code.topRight.x / width, 1.0 - code.topRight.y / height)),
+            CamRelayDictionaryWithPoint(CGPointMake(code.bottomRight.x / width, 1.0 - code.bottomRight.y / height)),
+            CamRelayDictionaryWithPoint(CGPointMake(code.bottomLeft.x / width, 1.0 - code.bottomLeft.y / height)),
         ];
         objc_setAssociatedObject(
             object,

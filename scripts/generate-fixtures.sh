@@ -12,6 +12,7 @@ xcrun clang \
   -framework Foundation \
   -framework AVFoundation \
   -framework CoreGraphics \
+  -framework CoreImage \
   -framework CoreMedia \
   -framework CoreVideo \
   -framework ImageIO \

@@ -20,6 +20,7 @@ test -x .build/capture-inspector
 test -f .build/fixtures/colors.mp4
 test -f .build/fixtures/checkerboard.png
 test -f .build/fixtures/moving-shapes.mp4
+test -f .build/fixtures/qr.png
 mkdir -p .build/validation
 RUN_DIR=$(mktemp -d "$PROJECT_DIR/.build/validation/$ARCHITECTURE.XXXXXX")
 SESSION="validation-$$"
@@ -58,6 +59,7 @@ await_log() {
   --fixture colors=.build/fixtures/colors.mp4 \
   --fixture pattern=.build/fixtures/checkerboard.png \
   --fixture motion=.build/fixtures/moving-shapes.mp4 \
+  --fixture qr=.build/fixtures/qr.png \
   --fixture still=.build/fixtures/red.png >"$RUN_DIR/relay.log" 2>&1 &
 RELAY_PID=$!
 control wait --timeout 20s --json | jq -e '.error == null and .status.paused' >/dev/null
@@ -88,10 +90,15 @@ for fixture in colors pattern motion; do
 done
 await_log 'reconfiguration connections=5 ports=valid'
 test "$(rg -c 'reconfiguration connections=5 ports=valid' "$RUN_DIR/probe.log")" -ge 2
+control select qr --paused --wait-for-frame --timeout 10s --json | \
+  jq -e '.error == null and .status.selected == "qr"' >/dev/null
+await_log 'metadata type=.*QR.* value=camrelay-validation corners=4 representation=valid'
+control select motion --paused --wait-for-frame --timeout 10s --json >/dev/null
 
 before=$(control status --json | jq -r '.status.generation')
 if control select missing --json >"$RUN_DIR/failed-selection.json"; then exit 1; fi
 control status --json | jq -e --argjson generation "$before" '.status.selected == "motion" and .status.generation == $generation' >/dev/null
+control next --paused --wait-for-frame --json | jq -e '.status.selected == "qr"' >/dev/null
 control next --paused --wait-for-frame --json | jq -e '.status.selected == "still"' >/dev/null
 control next --paused --wait-for-frame --json | jq -e '.status.selected == "colors"' >/dev/null
 control previous --paused --wait-for-frame --json | jq -e '.status.selected == "still"' >/dev/null
