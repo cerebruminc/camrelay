@@ -1,6 +1,7 @@
 import AVFoundation
 import CamRelayCore
 import CoreGraphics
+import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -27,6 +28,40 @@ protocol FrameSource: AnyObject {
     var format: FrameFormat { get }
     func nextFrame() throws -> MediaFrame
     func restart() throws
+}
+
+struct VideoDisplayGeometry: Equatable {
+    let width: Int
+    let height: Int
+    let transform: CGAffineTransform
+
+    init(naturalSize: CGSize, preferredTransform: CGAffineTransform) throws {
+        let determinant = preferredTransform.a * preferredTransform.d
+            - preferredTransform.b * preferredTransform.c
+        guard determinant.isFinite, abs(determinant) > .ulpOfOne else {
+            throw MediaFrameSourceError.invalidVideoTransform
+        }
+
+        // Core Image's video-buffer coordinates run opposite AVFoundation's
+        // display transform, so normalize with the inverse transform.
+        let displayTransform = preferredTransform.inverted()
+        let displayBounds = CGRect(origin: .zero, size: naturalSize)
+            .applying(displayTransform)
+            .standardized
+        guard displayBounds.width.isFinite, displayBounds.height.isFinite,
+              displayBounds.width > 0, displayBounds.height > 0 else {
+            throw MediaFrameSourceError.invalidVideoTransform
+        }
+
+        width = Int(displayBounds.width.rounded(.toNearestOrAwayFromZero))
+        height = Int(displayBounds.height.rounded(.toNearestOrAwayFromZero))
+        guard width > 0, height > 0 else {
+            throw MediaFrameSourceError.invalidVideoTransform
+        }
+        transform = displayTransform.concatenating(
+            CGAffineTransform(translationX: -displayBounds.minX, y: -displayBounds.minY)
+        )
+    }
 }
 
 final class MediaFrameSource: FrameSource {
@@ -130,6 +165,9 @@ private final class VideoFrameReader {
 
     private let asset: AVURLAsset
     private let track: AVAssetTrack
+    private let displayGeometry: VideoDisplayGeometry
+    private let imageContext: CIContext
+    private let colorSpace: CGColorSpace
     private let sourceStartTime: CMTime
     private let loopDurationNanoseconds: UInt64
     private var reader: AVAssetReader?
@@ -143,6 +181,13 @@ private final class VideoFrameReader {
             throw MediaFrameSourceError.noVideoTrack(url.lastPathComponent)
         }
         track = videoTrack
+
+        displayGeometry = try VideoDisplayGeometry(
+            naturalSize: await videoTrack.load(.naturalSize),
+            preferredTransform: await videoTrack.load(.preferredTransform)
+        )
+        imageContext = CIContext(options: [.cacheIntermediates: false])
+        colorSpace = CGColorSpaceCreateDeviceRGB()
 
         let fps = try await videoTrack.load(.nominalFrameRate).rounded(.toNearestOrAwayFromZero)
         let framesPerSecond = max(1, min(60, Int(fps > 0 ? fps : 30)))
@@ -159,7 +204,12 @@ private final class VideoFrameReader {
         )
         reader = configuredReader
         output = configuredOutput
-        guard let first = try Self.copyFrame(from: output) else {
+        guard let first = try Self.copyFrame(
+            from: output,
+            geometry: displayGeometry,
+            context: imageContext,
+            colorSpace: colorSpace
+        ) else {
             throw MediaFrameSourceError.noVideoFrames(url.lastPathComponent)
         }
         sourceStartTime = first.presentationTime
@@ -188,13 +238,23 @@ private final class VideoFrameReader {
             return pendingFrame
         }
 
-        if let frame = try Self.copyFrame(from: output) {
+        if let frame = try Self.copyFrame(
+            from: output,
+            geometry: displayGeometry,
+            context: imageContext,
+            colorSpace: colorSpace
+        ) {
             return makeFrame(from: frame)
         }
 
         loopOffsetNanoseconds += loopDurationNanoseconds
         try configureReader()
-        guard let frame = try Self.copyFrame(from: output) else {
+        guard let frame = try Self.copyFrame(
+            from: output,
+            geometry: displayGeometry,
+            context: imageContext,
+            colorSpace: colorSpace
+        ) else {
             throw MediaFrameSourceError.noVideoFrames(asset.url.lastPathComponent)
         }
         return makeFrame(from: frame)
@@ -246,7 +306,12 @@ private final class VideoFrameReader {
         output = newOutput
     }
 
-    private static func copyFrame(from output: AVAssetReaderTrackOutput?) throws -> RawVideoFrame? {
+    private static func copyFrame(
+        from output: AVAssetReaderTrackOutput?,
+        geometry: VideoDisplayGeometry,
+        context: CIContext,
+        colorSpace: CGColorSpace
+    ) throws -> RawVideoFrame? {
         guard let sampleBuffer = output?.copyNextSampleBuffer() else {
             return nil
         }
@@ -257,19 +322,35 @@ private final class VideoFrameReader {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
-        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-            throw MediaFrameSourceError.missingPixelBuffer
-        }
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        let destinationBytesPerRow = width * 4
-        var data = Data(count: destinationBytesPerRow * height)
-        data.withUnsafeMutableBytes { destination in
-            for row in 0..<height {
-                let sourceRow = baseAddress.advanced(by: row * sourceBytesPerRow)
-                let destinationRow = destination.baseAddress!.advanced(by: row * destinationBytesPerRow)
-                destinationRow.copyMemory(from: sourceRow, byteCount: destinationBytesPerRow)
+        let width = geometry.width
+        let height = geometry.height
+        let bytesPerRow = width * 4
+        var data = Data(count: bytesPerRow * height)
+        if geometry.transform.isIdentity,
+           width == CVPixelBufferGetWidth(pixelBuffer),
+           height == CVPixelBufferGetHeight(pixelBuffer) {
+            guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+                throw MediaFrameSourceError.missingPixelBuffer
+            }
+            let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+            data.withUnsafeMutableBytes { destination in
+                for row in 0..<height {
+                    let sourceRow = baseAddress.advanced(by: row * sourceBytesPerRow)
+                    let destinationRow = destination.baseAddress!.advanced(by: row * bytesPerRow)
+                    destinationRow.copyMemory(from: sourceRow, byteCount: bytesPerRow)
+                }
+            }
+        } else {
+            let image = CIImage(cvPixelBuffer: pixelBuffer).transformed(by: geometry.transform)
+            data.withUnsafeMutableBytes { destination in
+                context.render(
+                    image,
+                    toBitmap: destination.baseAddress!,
+                    rowBytes: bytesPerRow,
+                    bounds: CGRect(x: 0, y: 0, width: width, height: height),
+                    format: .BGRA8,
+                    colorSpace: colorSpace
+                )
             }
         }
         return RawVideoFrame(
@@ -327,6 +408,7 @@ enum MediaFrameSourceError: LocalizedError {
     case noVideoFrames(String)
     case readerConfigurationFailed
     case missingPixelBuffer
+    case invalidVideoTransform
 
     var errorDescription: String? {
         switch self {
@@ -340,6 +422,8 @@ enum MediaFrameSourceError: LocalizedError {
             "Could not configure the Apple video reader."
         case .missingPixelBuffer:
             "The Apple video reader returned a frame without pixels."
+        case .invalidVideoTransform:
+            "The video has invalid dimensions or orientation metadata."
         }
     }
 }

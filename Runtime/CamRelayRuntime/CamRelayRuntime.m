@@ -687,7 +687,7 @@ static NSArray<AVCaptureDevice *> *CamRelayVideoDevicesForPosition(AVCaptureDevi
 - (BOOL)isVideoOrientationSupported { return YES; }
 - (AVCaptureVideoOrientation)videoOrientation {
     NSNumber *value = objc_getAssociatedObject(self, CamRelayConnectionOrientationKey);
-    return value != nil ? value.integerValue : AVCaptureVideoOrientationLandscapeLeft;
+    return value != nil ? value.integerValue : AVCaptureVideoOrientationPortrait;
 }
 - (void)setVideoOrientation:(AVCaptureVideoOrientation)value {
     objc_setAssociatedObject(self, CamRelayConnectionOrientationKey, @(value), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -974,11 +974,13 @@ static CGImagePropertyOrientation CamRelayImageOrientation(AVCaptureConnection *
     if (rotation != nil) {
         return CamRelayOrientationForRotation(rotation.doubleValue, mirrored);
     }
+    // Host frames arrive display-upright. Produce the inverse, sensor-oriented
+    // pixels that camera consumers interpret using the connection orientation.
     switch (connection.videoOrientation) {
     case AVCaptureVideoOrientationPortrait:
-        return mirrored ? kCGImagePropertyOrientationRightMirrored : kCGImagePropertyOrientationRight;
-    case AVCaptureVideoOrientationPortraitUpsideDown:
         return mirrored ? kCGImagePropertyOrientationLeftMirrored : kCGImagePropertyOrientationLeft;
+    case AVCaptureVideoOrientationPortraitUpsideDown:
+        return mirrored ? kCGImagePropertyOrientationRightMirrored : kCGImagePropertyOrientationRight;
     case AVCaptureVideoOrientationLandscapeLeft:
         return mirrored ? kCGImagePropertyOrientationUpMirrored : kCGImagePropertyOrientationUp;
     case AVCaptureVideoOrientationLandscapeRight:

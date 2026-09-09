@@ -331,6 +331,7 @@ The compatibility layer currently includes:
 - Front and back wide-angle camera discovery and video authorization.
 - Fixture-sized formats, frame-rate ranges, device input ports, session presets, and capture connections.
 - Focus, exposure, white-balance, zoom, orientation, mirroring, and stabilization properties.
+- Video preferred-transform metadata is applied before frames enter the synthetic camera pipeline.
 - BGRA and bi-planar YUV delivery through `AVCaptureVideoDataOutput`.
 - `AVCaptureVideoPreviewLayer` rendering.
 - JPEG photo capture and metadata customization through `AVCapturePhotoOutput`.
@@ -343,7 +344,6 @@ These capabilities are exposed by default as platform behavior. They are not sel
 
 - The host CLI is currently built and tested on Apple Silicon. The injected Simulator runtime supports both arm64 and x86_64 apps.
 - Running an x86_64 Simulator app on Apple Silicon requires the macOS translation component.
-- Video track rotation metadata is not applied yet, so portrait video may appear rotated when its pixels are stored sideways.
 - The synthetic device exposes one format derived from the initial fixture dimensions and frame rate.
 - Photo export supports metadata replacement; replacement thumbnails and auxiliary depth or matte images are not supported.
 - Depth data, audio capture, raw photos, and non-QR metadata types are not yet synthesized.

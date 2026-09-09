@@ -155,7 +155,7 @@ The build and fixture scripts create disposable artifacts under `.build`. Genera
 
 - Runtime and validation-app build scripts emit universal arm64 and x86_64 iOS Simulator binaries.
 - x86_64 Simulator execution on Apple Silicon requires the macOS translation component.
-- The iOS decoder does not apply video preferred-transform metadata yet, so some portrait recordings may appear rotated there.
+- The iOS decoder applies video preferred-transform metadata before frames enter the fixed-format playback pipeline.
 - Apple-only frameworks must remain confined to the iOS adapter and runtime targets.
 
 ## Working Rules

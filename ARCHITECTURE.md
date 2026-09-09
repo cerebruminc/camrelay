@@ -204,7 +204,7 @@ An image fixture produces the same pixel payload at 30 frames per second. Presen
 
 ### Video fixtures
 
-Video decoding uses `AVAssetReader` and the first video track. `AVAssetReaderTrackOutput` requests BGRA pixel buffers with IOSurface backing. Each decoded row is copied into tightly packed BGRA data so the server has a stable frame layout.
+Video decoding uses `AVAssetReader` and the first video track. `AVAssetReaderTrackOutput` requests BGRA pixel buffers with IOSurface backing. The decoder applies the track's preferred transform and normalizes the resulting display bounds, then copies each decoded frame into tightly packed BGRA data so the server has a stable, upright frame layout.
 
 The decoder's frame rate comes from the track's nominal frame rate, rounded to an integer and limited to the range from 1 through 60. A value of 30 is used when the track does not report a positive rate. The initial fixture determines the exposed camera rate for the whole session. Source timestamps determine which decoded frame is visible at each output tick, including for variable-rate sources.
 
@@ -215,8 +215,6 @@ Each frame carries:
 - Sample duration in nanoseconds
 
 When the reader reaches the end, it starts a new asset reader and adds the asset duration to the loop offset. Presentation timestamps therefore continue increasing across loops. They do not reset to zero at the loop boundary.
-
-Video preferred-transform metadata is not applied. A file whose stored pixels require rotation may appear rotated.
 
 ## Timeline scheduling
 
@@ -406,7 +404,7 @@ The sample buffer is the common source for video callbacks, photos, movie record
 
 For `AVCaptureVideoDataOutput`, the runtime calls the configured sample-buffer delegate on the queue supplied by the app. The output supports packed BGRA plus full-range and video-range bi-planar YUV.
 
-If the output requests BGRA with no orientation or mirroring transform, the runtime retains the source sample. Other requests pass through a Core Image render into a new pixel buffer. The copied sample keeps the source timing.
+If the output requests BGRA with no orientation or mirroring transform, the runtime retains the source sample. Other requests pass through a Core Image render into a new pixel buffer. Because host frames arrive display-upright, portrait rotations are inverted when producing the sensor-oriented buffer expected by video-data consumers. The copied sample keeps the source timing.
 
 ### Preview layers
 
@@ -523,7 +521,6 @@ New camera compatibility should describe general AVFoundation behavior. It shoul
 - Only iOS Simulator on macOS is implemented.
 - The host executable is currently built and tested on Apple Silicon.
 - The synthetic camera exposes one format derived from the initial fixture for the whole relay session.
-- Video preferred-transform metadata is not applied.
 - Audio, depth data, raw photos, and non-QR metadata are not synthesized.
 - Focus, exposure, white-balance, stabilization, and zoom settings do not alter fixture pixels.
 - Raw BGRA transport uses substantial loopback bandwidth at high resolutions.
