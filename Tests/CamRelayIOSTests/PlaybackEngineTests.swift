@@ -4,6 +4,28 @@ import XCTest
 @testable import CamRelayIOS
 
 final class PlaybackEngineTests: XCTestCase {
+    func testLargestFixtureDeterminesRelayOutputFormat() {
+        let image = FrameFormat(width: 100, height: 100, bytesPerRow: 400, framesPerSecond: 30)
+        let video = FrameFormat(width: 1080, height: 1920, bytesPerRow: 4320, framesPerSecond: 30)
+
+        XCTAssertEqual(preferredRelayOutputFormat(initial: image, candidates: [video]), video)
+    }
+
+    func testLowResolutionInitialFrameUsesLargerRelayOutputFormat() throws {
+        let image = FakeSource(width: 2, height: 2, fps: 30, values: [255])
+        let output = FrameFormat(width: 4, height: 4, bytesPerRow: 16, framesPerSecond: 30)
+        let engine = try PlaybackEngine(
+            initial: PreparedFixture(name: "qr", source: image),
+            outputFormat: output,
+            paused: true
+        )
+
+        XCTAssertEqual(engine.format, output)
+        let frame = engine.frame(at: 0, duration: 10).media
+        XCTAssertEqual(frame.data.count, output.frameByteCount)
+        XCTAssertEqual(frame.data.first, 255)
+    }
+
     func testSwitchKeepsOutputFormatAndContinuousCameraTimestamps() throws {
         let engine = try PlaybackEngine(initial: fixture("colors", fps: 30, values: [10, 20]))
         XCTAssertEqual(engine.frame(at: 0, duration: 10).media.data.first, 10)

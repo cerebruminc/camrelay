@@ -206,7 +206,7 @@ An image fixture produces the same pixel payload at 30 frames per second. Presen
 
 Video decoding uses `AVAssetReader` and the first video track. `AVAssetReaderTrackOutput` requests BGRA pixel buffers with IOSurface backing. The decoder applies the track's preferred transform and normalizes the resulting display bounds, then copies each decoded frame into tightly packed BGRA data so the server has a stable, upright frame layout.
 
-The decoder's frame rate comes from the track's nominal frame rate, rounded to an integer and limited to the range from 1 through 60. A value of 30 is used when the track does not report a positive rate. The initial fixture determines the exposed camera rate for the whole session. Source timestamps determine which decoded frame is visible at each output tick, including for variable-rate sources.
+The decoder's frame rate comes from the track's nominal frame rate, rounded to an integer and limited to the range from 1 through 60. A value of 30 is used when the track does not report a positive rate. At startup, the supported, decodable fixture with the largest pixel count determines the exposed camera dimensions and rate for the whole session. When fixtures have identical dimensions, the higher frame rate wins. Source timestamps determine which decoded frame is visible at each output tick, including for variable-rate sources.
 
 Each frame carries:
 
@@ -218,7 +218,7 @@ When the reader reaches the end, it starts a new asset reader and adds the asset
 
 ## Timeline scheduling
 
-`FrameServer` schedules a fixed output cadence against `DispatchTime` uptime. The initial fixture sets the output dimensions and rate; they remain constant across selections. Each tick has an absolute target:
+`FrameServer` schedules a fixed output cadence against `DispatchTime` uptime. The highest-resolution supported fixture that can be decoded at startup sets the output dimensions and rate; they remain constant across selections. The initial selection is converted into that format before the first frame is sent. Each tick has an absolute target:
 
 ```text
 target uptime = uptime origin + output tick * 1,000,000,000 / output fps
@@ -231,7 +231,7 @@ Decode and broadcast work do not get added to the next frame interval. Late tick
 The scheduler has these properties:
 
 - Source timestamps determine video pacing.
-- An initial image selects a 30 fps output rate.
+- An image selected as the output-format source uses a 30 fps output rate.
 - Loop duration follows the source asset duration.
 - Late work causes a skipped frame rather than slower playback.
 
@@ -377,7 +377,7 @@ flowchart TB
 
 Camera discovery returns synthetic front and back wide-angle devices for video requests. Lookup by unique identifier and default-device APIs return the same objects. Video authorization APIs report access for the synthetic video path.
 
-The synthetic device exposes one format based on the initial fixture dimensions and frame rate. It also reports the properties commonly inspected during camera setup, including frame-rate ranges, focus and exposure modes, white balance, zoom, orientation, mirroring, and stabilization.
+The synthetic device exposes one stable format based on the highest-resolution supported fixture that can be decoded at startup. It also reports the properties commonly inspected during camera setup, including frame-rate ranges, focus and exposure modes, white balance, zoom, orientation, mirroring, and stabilization.
 
 When an app adds a synthetic input to an `AVCaptureSession`, the runtime records it alongside supported outputs and connections. It mirrors the collection and lifecycle APIs that apps use to inspect the configured graph.
 
@@ -520,7 +520,7 @@ New camera compatibility should describe general AVFoundation behavior. It shoul
 
 - Only iOS Simulator on macOS is implemented.
 - The host executable is currently built and tested on Apple Silicon.
-- The synthetic camera exposes one format derived from the initial fixture for the whole relay session.
+- The synthetic camera exposes one stable format derived from the highest-resolution supported fixture that can be decoded at startup.
 - Audio, depth data, raw photos, and non-QR metadata are not synthesized.
 - Focus, exposure, white-balance, stabilization, and zoom settings do not alter fixture pixels.
 - Raw BGRA transport uses substantial loopback bandwidth at high resolutions.

@@ -36,7 +36,7 @@ final class PreparedFixture: @unchecked Sendable {
 final class PlaybackEngine: @unchecked Sendable {
     let format: FrameFormat
     private let lock = NSLock()
-    private let converter = FrameConverter()
+    private let converter: FrameConverter
     private var prepared: PreparedFixture
     private var clock: PlaybackClock
     private var current: MediaFrame
@@ -44,17 +44,21 @@ final class PlaybackEngine: @unchecked Sendable {
     private var rendered: Data
     private var failure: String?
 
-    init(initial: PreparedFixture, paused: Bool = false) throws {
-        format = initial.source.format
-        guard format.width > 0, format.height > 0, format.width <= 4096, format.height <= 4096,
-              format.bytesPerRow == format.width * 4,
-              (1...120).contains(format.framesPerSecond) else {
+    init(initial: PreparedFixture, outputFormat: FrameFormat? = nil, paused: Bool = false) throws {
+        let initialFormat = initial.source.format
+        guard isSupportedRelayOutput(initialFormat) else {
             throw RelayError("The initial fixture must have dimensions up to 4096 pixels and a supported frame rate.")
         }
+        format = outputFormat ?? initialFormat
+        guard isSupportedRelayOutput(format) else {
+            throw RelayError("The relay output must have dimensions up to 4096 pixels and a supported frame rate.")
+        }
+        let converter = FrameConverter()
+        self.converter = converter
         prepared = initial
         clock = PlaybackClock(paused: paused)
         current = initial.firstFrame
-        rendered = initial.firstFrame.data
+        rendered = try converter.convert(initial.firstFrame, from: initialFormat, to: format)
     }
 
     @discardableResult
@@ -124,6 +128,29 @@ final class PlaybackEngine: @unchecked Sendable {
             )
         }
     }
+}
+
+func preferredRelayOutputFormat(initial: FrameFormat, candidates: [FrameFormat]) -> FrameFormat {
+    candidates.reduce(initial) { selected, candidate in
+        guard isSupportedRelayOutput(candidate) else { return selected }
+        let selectedPixels = Int64(selected.width) * Int64(selected.height)
+        let candidatePixels = Int64(candidate.width) * Int64(candidate.height)
+        if candidatePixels > selectedPixels {
+            return candidate
+        }
+        if candidate.width == selected.width,
+           candidate.height == selected.height,
+           candidate.framesPerSecond > selected.framesPerSecond {
+            return candidate
+        }
+        return selected
+    }
+}
+
+private func isSupportedRelayOutput(_ format: FrameFormat) -> Bool {
+    format.width > 0 && format.height > 0 && format.width <= 4096 && format.height <= 4096
+        && format.bytesPerRow == format.width * 4
+        && (1...120).contains(format.framesPerSecond)
 }
 
 private final class FrameConverter: @unchecked Sendable {

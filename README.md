@@ -19,7 +19,7 @@ After [building from source](#build-and-run-from-source), run it from the reposi
 - Presents front and back cameras through standard AVFoundation discovery and capture APIs.
 - Supports video-data, photo, movie-file, preview-layer, and QR metadata capture paths.
 - Switches named fixtures, replays, pauses, and resumes from terminal keys or separate CLI commands without restarting apps.
-- Keeps the initial fixture's camera dimensions and frame rate for the session; other fixtures fit inside that frame with black padding when needed.
+- Keeps one stable camera format for the session, using the highest-resolution supported fixture that can be decoded so a small initial image does not reduce later video quality.
 - Repeats images and samples videos at the session's output rate while preserving source playback speed and loop duration.
 - Removes the Simulator-wide feed and stops the relay on Ctrl-C or SIGTERM.
 
@@ -162,7 +162,7 @@ From another terminal, or from a test runner:
 
 On iOS, use `--paused` on select, replay, next, or previous to hold the replacement's first frame. Pausing holds the image but keeps camera samples and their timestamps advancing. A failed file load leaves the previous source selected on either platform.
 
-On iOS, the first fixture determines the camera format for the whole session. This example keeps the initial video's 320×240, 15 fps output when switching to the 1280×720, 24 fps clip or the portrait image. On Android, CamRelay fits each source into the emulator's environment-camera viewport; the emulator owns the camera format and playback loop.
+On iOS, CamRelay inspects the fixture set at startup and uses the supported, decodable fixture with the largest pixel count as the stable camera format. If fixtures have the same dimensions, the higher frame rate wins. `--initial` controls which fixture appears first, not the output resolution. In this example, the 1280×720, 24 fps clip sets the format even though the 320×240 clip is selected initially. On Android, CamRelay fits each source into the emulator's environment-camera viewport; the emulator owns the camera format and playback loop.
 
 ### CI orchestration
 
@@ -344,7 +344,7 @@ These capabilities are exposed by default as platform behavior. They are not sel
 
 - The host CLI is currently built and tested on Apple Silicon. The injected Simulator runtime supports both arm64 and x86_64 apps.
 - Running an x86_64 Simulator app on Apple Silicon requires the macOS translation component.
-- The synthetic device exposes one format derived from the initial fixture dimensions and frame rate.
+- The synthetic device exposes one stable format derived from the highest-resolution supported fixture that can be decoded at startup.
 - Photo export supports metadata replacement; replacement thumbnails and auxiliary depth or matte images are not supported.
 - Depth data, audio capture, raw photos, and non-QR metadata types are not yet synthesized.
 - Focus, exposure, white-balance, stabilization, and zoom configuration are accepted for compatibility but do not alter fixture pixels.

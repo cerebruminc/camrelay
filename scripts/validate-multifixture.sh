@@ -79,7 +79,7 @@ for fixture in colors pattern motion; do
   esac
   action "$position"
   control select "$fixture" --paused --wait-for-frame --timeout 10s --json | \
-    jq -e --arg fixture "$fixture" '.error == null and .status.selected == $fixture and .status.paused and .status.width == 320 and .status.height == 240 and .status.framesPerSecond == 15' >/dev/null
+    jq -e --arg fixture "$fixture" '.error == null and .status.selected == $fixture and .status.paused and .status.width == 1280 and .status.height == 720 and .status.framesPerSecond == 24' >/dev/null
   photo=$((photo + 1))
   action capture
   await_log "photo=$photo .*camera=$position .*metadata=YES"

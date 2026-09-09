@@ -121,8 +121,12 @@ public struct IOSRelay {
             throw RelayError("Unknown initial fixture: \(initialName)")
         }
         let prepared = try await prepareFixture(initial)
-        let source = prepared.source
-        let server = FrameServer(playback: try PlaybackEngine(initial: prepared, paused: options.paused))
+        let outputFormat = await preferredOutputFormat(fixtures: fixtures, initial: prepared)
+        let server = FrameServer(playback: try PlaybackEngine(
+            initial: prepared,
+            outputFormat: outputFormat,
+            paused: options.paused
+        ))
         try server.start()
 
         do {
@@ -130,7 +134,7 @@ public struct IOSRelay {
                 on: simulator,
                 runtimeURL: runtimeURL,
                 frameServerPort: server.port,
-                frameFormat: source.format
+                frameFormat: outputFormat
             )
         } catch {
             server.stop()
@@ -146,6 +150,19 @@ public struct IOSRelay {
             fixtures: fixtures
         )
     }
+}
+
+private func preferredOutputFormat(fixtures: [NamedFixture], initial: PreparedFixture) async -> FrameFormat {
+    var candidates: [FrameFormat] = []
+    for fixture in fixtures where fixture.name != initial.name {
+        do {
+            let source = try await MediaFrameSource(fixture: MediaFixture(path: fixture.path))
+            candidates.append(source.format)
+        } catch {
+            // Alternate fixtures remain lazy failures so one bad source does not prevent startup.
+        }
+    }
+    return preferredRelayOutputFormat(initial: initial.source.format, candidates: candidates)
 }
 
 private actor PlaybackCommands {
