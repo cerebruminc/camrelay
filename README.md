@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="camrelay-icon.png" alt="CamRelay" width="160" />
+</p>
+
 # CamRelay
 
 CamRelay uses an image or video fixture as the camera feed for apps running in an iOS Simulator or Android Emulator.
