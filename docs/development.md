@@ -48,6 +48,10 @@ Run the complete Swift test suite when shared behavior or interfaces may be affe
 swift test
 ```
 
+`unit-tests.yml` runs on every pull request, on pushes to `master`, and by manual dispatch. It runs the full Swift suite on Apple Silicon and Intel macOS, and Expo type checking plus JavaScript tests on Ubuntu 24.04 with Node.js 22. Mac jobs select Xcode 26.2 on `macos-15` (arm64) and `macos-15-intel` (x86_64). Actions use version tags.
+
+The workflow uses read-only repository permissions and `pull_request`, including fork PRs. Older runs for the same PR or ref are cancelled. Configure branch protection for the desired unit-test job checks.
+
 The suite covers command and fixture validation, source-clock behavior, Simulator selection and activation commands, output scheduling and conversion, local sockets and leases, CRF3 transport, switching, acknowledgements, reconnection, slow-client isolation, Android SDK and AVD discovery, emulator startup and shutdown, and media control.
 
 ## Deterministic fixtures
