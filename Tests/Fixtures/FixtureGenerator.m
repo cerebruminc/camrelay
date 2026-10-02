@@ -330,6 +330,9 @@ static BOOL WriteVideo(
         CVPixelBufferRelease(pixelBuffer);
     }
 
+    // The final pixel buffer has no explicit duration. End the session at the
+    // fixture boundary rather than relying on the encoder's inferred duration.
+    [writer endSessionAtSourceTime:CMTimeMake(framesPerSecond * 3, framesPerSecond)];
     [input markAsFinished];
     dispatch_semaphore_t finished = dispatch_semaphore_create(0);
     [writer finishWritingWithCompletionHandler:^{

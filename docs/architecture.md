@@ -93,6 +93,8 @@ Decode and broadcast time is not added to the next interval. Late ticks are skip
 
 `PlaybackEngine` retains the current source frame and one lookahead frame. It repeats or drops source frames according to timestamps when source and output rates differ. A Core Image conversion preserves aspect ratio and fills unused output pixels with black.
 
+Video decoding reuses the reader across loops and adds the clip duration to source timestamps. Samples at or beyond the clip's end are drained before resetting the reader, preserving timestamp order without creating a decoder for each loop. Per-frame autorelease pools and reader cancellation during teardown keep decoder resources bounded.
+
 Each committed selection, replay, or actual pause/play transition increments a generation. The runtime uses this value to discard obsolete queued work and flush old preview samples.
 
 ### CRF3 frame transport

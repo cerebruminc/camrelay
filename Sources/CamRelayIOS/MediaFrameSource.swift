@@ -244,23 +244,13 @@ private final class VideoFrameReader {
             return pendingFrame
         }
 
-        if let frame = try Self.copyFrame(
-            from: output,
-            geometry: displayGeometry,
-            context: imageContext,
-            colorSpace: colorSpace
-        ) {
+        if let frame = try nextFrameInSourceRange() {
             return makeFrame(from: frame)
         }
 
         loopOffsetNanoseconds += loopDurationNanoseconds
         try resetReaderAfterEnd()
-        guard let frame = try Self.copyFrame(
-            from: output,
-            geometry: displayGeometry,
-            context: imageContext,
-            colorSpace: colorSpace
-        ) else {
+        guard let frame = try nextFrameInSourceRange() else {
             throw MediaFrameSourceError.noVideoFrames(asset.url.lastPathComponent)
         }
         return makeFrame(from: frame)
@@ -275,6 +265,22 @@ private final class VideoFrameReader {
     private func configureReader() throws {
         reader?.cancelReading()
         try Self.configureReader(asset: asset, track: track, reader: &reader, output: &output)
+    }
+
+    private func nextFrameInSourceRange() throws -> RawVideoFrame? {
+        while let frame = try Self.copyFrame(
+            from: output,
+            geometry: displayGeometry,
+            context: imageContext,
+            colorSpace: colorSpace
+        ) {
+            // Random-access decoding can emit an extra sample at the clip's end.
+            // Drain it before resetting the reader so loops remain end-exclusive.
+            if CMTimeCompare(frame.presentationTime, CMTimeRangeGetEnd(sourceTimeRange)) < 0 {
+                return frame
+            }
+        }
+        return nil
     }
 
     private func resetReaderAfterEnd() throws {
