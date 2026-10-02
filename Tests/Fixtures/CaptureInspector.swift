@@ -91,9 +91,14 @@ struct CaptureInspector {
         for (name, width, height, fps) in [("colors.mp4", 320, 240, Float(15)), ("moving-shapes.mp4", 1280, 720, Float(24))] {
             let url = directory.appendingPathComponent(name)
             let asset = AVURLAsset(url: url)
-            guard let track = try await asset.loadTracks(withMediaType: .video).first,
-                  try await track.load(.nominalFrameRate) == fps,
-                  abs(try await asset.load(.duration).seconds - 3) < 0.01 else { throw Failure("Unexpected video timing: \(name)") }
+            guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+                throw Failure("Missing video track: \(name)")
+            }
+            let actualFrameRate = try await track.load(.nominalFrameRate)
+            let actualDuration = try await asset.load(.duration).seconds
+            guard actualFrameRate == fps, abs(actualDuration - 3) < 0.01 else {
+                throw Failure("Unexpected video timing: \(name), fps=\(actualFrameRate) (expected \(fps)), duration=\(actualDuration)s (expected 3s)")
+            }
             var samples: [[UInt8]] = []
             for second in [0.0, 0.5, 1.0, 2.0] {
                 let image = try await firstImage(url, at: second)
