@@ -1,0 +1,38 @@
+name: Release please
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check release token
+        env:
+          RELEASE_TOKEN: ${{ secrets.GHA_NODEJS_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::Organization secret GHA_NODEJS_TOKEN is unavailable. Allow this repository to access the organization Actions secret."
+            exit 1
+          fi
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GHA_NODEJS_TOKEN }}
+          target-branch: master
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
