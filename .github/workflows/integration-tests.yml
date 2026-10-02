@@ -1,0 +1,91 @@
+name: Integration tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create validation log directory
+        run: mkdir -p .build/validation
+      - name: Install validation tools
+        run: brew install jq ripgrep
+      - name: Build validation artifacts
+        run: |
+          {
+            swift build
+            sh scripts/build-runtime.sh
+            sh scripts/build-probe.sh
+            sh scripts/generate-fixtures.sh
+            xcrun swiftc -parse-as-library Tests/Fixtures/CaptureInspector.swift -o .build/capture-inspector
+            .build/capture-inspector --fixtures .build/fixtures
+          } 2>&1 | tee .build/validation/build.log
+      - name: Boot a dedicated iOS Simulator
+        id: simulator
+        run: |
+          runtime_info=$(xcrun simctl list runtimes -j | jq -ec '[.runtimes[] | select(.isAvailable and (.identifier | startswith("com.apple.CoreSimulator.SimRuntime.iOS-")))] | sort_by(.version | split(".") | map(tonumber)) | last // error("No available iOS runtime")')
+          runtime=$(printf '%s\n' "$runtime_info" | jq -er '.identifier')
+          device_type=$(printf '%s\n' "$runtime_info" | jq -er '[.supportedDeviceTypes[] | select(.productFamily == "iPhone")] | first | .identifier // error("No compatible iPhone device")')
+          device=$(xcrun simctl create CamRelay-CI "$device_type" "$runtime")
+          echo "device=$device" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b 2>&1 | tee .build/validation/simulator-boot.log
+      - name: Validate fixture switching and SIGTERM cleanup
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: sh scripts/validate-multifixture.sh "$ARCHITECTURE" TERM 2>&1 | tee .build/validation/multifixture-term.log
+      - name: Validate fixture switching and SIGINT cleanup
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: sh scripts/validate-multifixture.sh "$ARCHITECTURE" INT 2>&1 | tee .build/validation/multifixture-int.log
+      - name: Validate slow callbacks
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
+        run: sh scripts/validate-slow-video-callback.sh 2>&1 | tee .build/validation/slow-callbacks.log
+      - name: Validate terminal controls
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
+        run: python3 scripts/validate-terminal.py 2>&1 | tee .build/validation/terminal.log
+      - name: Upload validation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-validation-${{ matrix.architecture }}
+          path: .build/validation
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Shut down the CI Simulator
+        if: always() && steps.simulator.outputs.device != ''
+        env:
+          DEVICE: ${{ steps.simulator.outputs.device }}
+        run: xcrun simctl shutdown "$DEVICE"

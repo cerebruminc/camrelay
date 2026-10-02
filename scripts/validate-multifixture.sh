@@ -39,7 +39,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-control() { .build/debug/camrelay "$@" --session "$SESSION"; }
+control() {
+  printf 'Control: %s\n' "$*" >&2
+  .build/debug/camrelay "$@" --session "$SESSION"
+}
 action() { xcrun simctl spawn "$DEVICE" notifyutil -p "org.camrelay.probe.validation.$1" >/dev/null 2>&1; }
 await_log() {
   pattern=$1
@@ -62,8 +65,14 @@ await_log() {
   --fixture qr=.build/fixtures/qr.png \
   --fixture still=.build/fixtures/red.png >"$RUN_DIR/relay.log" 2>&1 &
 RELAY_PID=$!
-control wait --timeout 20s --json | jq -e '.error == null and .status.paused' >/dev/null
-rg -q 'is ready throughout' "$RUN_DIR/relay.log"
+# Cold Simulator startup can be slow on hosted runners. The control response is
+# authoritative; it can arrive before the CLI prints its readiness message.
+if ! control wait --timeout 120s --json >"$RUN_DIR/readiness.json"; then
+  cat "$RUN_DIR/readiness.json" >&2
+  cat "$RUN_DIR/relay.log" >&2
+  exit 1
+fi
+jq -e '.error == null and .status.paused' "$RUN_DIR/readiness.json" >/dev/null
 xcrun simctl terminate "$DEVICE" org.camrelay.probe >/dev/null 2>&1 || true
 xcrun simctl install "$DEVICE" "$APP"
 PROBE_PID=$(xcrun simctl launch --stdout="$RUN_DIR/probe.log" --stderr="$RUN_DIR/probe.log" \
@@ -90,8 +99,13 @@ for fixture in colors pattern motion; do
 done
 await_log 'reconfiguration connections=5 ports=valid'
 test "$(rg -c 'reconfiguration connections=5 ports=valid' "$RUN_DIR/probe.log")" -ge 2
-control select qr --paused --wait-for-frame --timeout 10s --json | \
-  jq -e '.error == null and .status.selected == "qr"' >/dev/null
+# The runtime acknowledges after delivery, including QR detection. Its first
+# detector invocation can exceed 10 seconds on a cold Intel Simulator.
+if ! control select qr --paused --wait-for-frame --timeout 30s --json >"$RUN_DIR/qr-selection.json"; then
+  cat "$RUN_DIR/qr-selection.json" >&2
+  exit 1
+fi
+jq -e '.error == null and .status.selected == "qr"' "$RUN_DIR/qr-selection.json" >/dev/null
 await_log 'metadata type=.*QR.* value=camrelay-validation corners=4 representation=valid'
 control select motion --paused --wait-for-frame --timeout 10s --json >/dev/null
 
