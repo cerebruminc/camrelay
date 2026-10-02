@@ -38,7 +38,7 @@ struct MediaFrameSourceTests {
         #expect(abs(outputBounds.height - 640) < 0.001)
     }
 
-    @Test("video keeps producing frames across decoder resets")
+    @Test("video loops preserve frame order and strictly increasing timestamps")
     func videoLoops() async throws {
         let url = FileManager.default.temporaryDirectory
             .appending(path: "camrelay-loop-\(UUID().uuidString).mp4")
@@ -46,15 +46,34 @@ struct MediaFrameSourceTests {
         try await writeVideoFixture(to: url)
 
         let source = try await MediaFrameSource(fixture: MediaFixture(path: url.path))
-        var firstTime: UInt64?
-        var lastTime: UInt64 = 0
-        for _ in 0..<30 {
+        var previousTime: UInt64?
+        var firstLoopPixels: [Data] = []
+        for index in 0..<30 {
             let frame = try source.nextFrame()
             #expect(frame.data.count == source.format.frameByteCount)
-            firstTime = firstTime ?? frame.presentationTimeNanoseconds
-            lastTime = frame.presentationTimeNanoseconds
+            #expect(frame.durationNanoseconds > 0)
+            let expectedTime = UInt64((Double(index) * 1_000_000_000 / 30).rounded())
+            #expect(frame.presentationTimeNanoseconds == expectedTime)
+            if let previousTime {
+                #expect(frame.presentationTimeNanoseconds > previousTime)
+            }
+            previousTime = frame.presentationTimeNanoseconds
+            if index < 3 {
+                firstLoopPixels.append(frame.data)
+            } else {
+                let matchesExpectedFrame = frame.data == firstLoopPixels[index % 3]
+                #expect(matchesExpectedFrame)
+            }
         }
-        #expect(lastTime > (firstTime ?? lastTime))
+
+        try source.restart()
+        for index in 0..<6 {
+            let frame = try source.nextFrame()
+            let expectedTime = UInt64((Double(index) * 1_000_000_000 / 30).rounded())
+            #expect(frame.presentationTimeNanoseconds == expectedTime)
+            let matchesExpectedFrame = frame.data == firstLoopPixels[index % 3]
+            #expect(matchesExpectedFrame)
+        }
     }
 
     private func writeVideoFixture(to url: URL) async throws {
