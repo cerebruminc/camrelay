@@ -58,7 +58,7 @@ struct CamRelayCommand {
         do {
             switch command {
             case .help: print(usage)
-            case .version: print("camrelay 0.1.0") // x-release-please-version
+            case .version: print("camrelay 0.2.0") // x-release-please-version
             case .emulator(let options): try manageEmulator(options)
             case .run(let options): try await run(options)
             case .control(let name, let request, let json, let wait):
