@@ -6,7 +6,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
     public let serial: String
 
     private let emulator: AndroidEmulatorConnection
-    private let idleSceneMode: String
+    private let environmentFile: AVDEnvironmentFile
     private let controlClient: EmulatorControlClient
     private let avdLease: RelayLease
     private let sessionName: String
@@ -20,7 +20,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
         device: AndroidVirtualDevice,
         serial: String,
         emulator: AndroidEmulatorConnection,
-        idleSceneMode: String,
+        environmentFile: AVDEnvironmentFile,
         controlClient: EmulatorControlClient,
         avdLease: RelayLease,
         sessionName: String,
@@ -30,7 +30,7 @@ public final class AndroidRelaySession: @unchecked Sendable {
         self.device = device
         self.serial = serial
         self.emulator = emulator
-        self.idleSceneMode = idleSceneMode
+        self.environmentFile = environmentFile
         self.controlClient = controlClient
         self.avdLease = avdLease
         self.sessionName = sessionName
@@ -103,12 +103,14 @@ public final class AndroidRelaySession: @unchecked Sendable {
         do {
             try playback.stop {
                 if emulator.isRunning {
-                    try controlClient.setSceneMode(idleSceneMode, endpoint: emulator.endpoint)
+                    try controlClient.setSceneMode(environmentFile.sceneMode, endpoint: emulator.endpoint)
                 }
             }
         } catch {
             if emulator.isRunning { resetError = error }
         }
+        do { try environmentFile.restore() }
+        catch { resetError = resetError ?? error }
         cleanedUp = true
         if let resetError {
             let directory = mediaPreparer.leaveFilesInPlace()
@@ -173,7 +175,7 @@ public struct AndroidRelay {
                 device: device,
                 serial: emulator.endpoint.serial,
                 emulator: emulator,
-                idleSceneMode: environmentFile.sceneMode,
+                environmentFile: environmentFile,
                 controlClient: controlClient,
                 avdLease: lease,
                 sessionName: options.session,
@@ -186,6 +188,7 @@ public struct AndroidRelay {
                 if emulator.isRunning {
                     try controlClient.setSceneMode(environmentFile.sceneMode, endpoint: emulator.endpoint)
                 }
+                try environmentFile.restore()
             }
             catch {
                 let directory = mediaPreparer.leaveFilesInPlace()

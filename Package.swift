@@ -2,6 +2,15 @@
 
 import PackageDescription
 
+#if os(Linux)
+// Linux uses the shared control socket, without the Simulator implementation.
+let iosExcludes = ["FrameServer.swift", "IOSRelay.swift", "MediaFrameSource.swift", "PlaybackEngine.swift", "SimulatorController.swift"]
+let iosTestExcludes = ["FrameScheduleTests.swift", "FrameTransportTests.swift", "MediaFrameSourceTests.swift", "PlaybackEngineTests.swift", "SimulatorControllerTests.swift"]
+#else
+let iosExcludes: [String] = []
+let iosTestExcludes: [String] = []
+#endif
+
 let package = Package(
     name: "CamRelay",
     platforms: [
@@ -15,7 +24,8 @@ let package = Package(
         .target(name: "CamRelayCore"),
         .target(
             name: "CamRelayIOS",
-            dependencies: ["CamRelayCore"]
+            dependencies: ["CamRelayCore"],
+            exclude: iosExcludes
         ),
         .target(
             name: "CamRelayAndroid",
@@ -31,7 +41,8 @@ let package = Package(
         ),
         .testTarget(
             name: "CamRelayIOSTests",
-            dependencies: ["CamRelayIOS"]
+            dependencies: ["CamRelayIOS"],
+            exclude: iosTestExcludes
         ),
         .testTarget(
             name: "CamRelayAndroidTests",
