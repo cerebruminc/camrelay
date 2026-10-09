@@ -1,7 +1,11 @@
 import CamRelayAndroid
 import CamRelayCore
 import CamRelayIOS
+#if canImport(Darwin)
 import Darwin
+#else
+@preconcurrency import Glibc
+#endif
 import Foundation
 
 private let usage = """
@@ -93,6 +97,7 @@ struct CamRelayCommand {
     }
 
     private static func runIOS(_ options: RelayRunOptions) async throws {
+        #if os(macOS)
         // Readiness and state changes must be visible immediately in CI log pipes.
         setbuf(stdout, nil)
         let shutdown = ShutdownSignal()
@@ -117,6 +122,9 @@ struct CamRelayCommand {
         }
         defer { terminal?.stop() }
         shutdown.wait()
+        #else
+        throw RelayError("iOS Simulator relays require macOS. Use --platform android on Linux.")
+        #endif
     }
 
     private static func runAndroid(_ options: RelayRunOptions) throws {

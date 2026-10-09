@@ -4,7 +4,7 @@ Use this guide to build CamRelay, run fixtures, and control a session. The [CLI 
 
 ## Build from source
 
-CamRelay's Swift package targets macOS 14 or newer and requires Swift 6.2 or newer.
+CamRelay requires Swift 6.2 or newer. It supports macOS 14 or newer for iOS and Android, and Linux for Android. Linux preparation requires FFmpeg; see [Android requirements](android.md#requirements). The Linux CI target is Ubuntu 24.04.
 
 Build the debug CLI from the repository root:
 
@@ -28,7 +28,7 @@ For an optimized CLI build:
 swift build -c release
 ```
 
-The release executable is `.build/release/camrelay`. It uses the same separately built iOS runtime.
+The release executable is `.build/release/camrelay`. iOS relays use the same separately built Simulator runtime.
 
 ## Run one fixture
 

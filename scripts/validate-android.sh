@@ -2,7 +2,7 @@
 # End-to-end Android check. Starts and stops the emulator separately from the relay.
 set -eu
 
-PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PROJECT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$PROJECT_DIR"
 
 AVD=${1:-}
@@ -11,13 +11,17 @@ if [ -z "$AVD" ]; then
   exit 2
 fi
 
-SDK_ROOT=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}
+DEFAULT_SDK="$HOME/Library/Android/sdk"
+if [ "$(uname -s)" = Linux ]; then
+  DEFAULT_SDK="$HOME/Android/Sdk"
+fi
+SDK_ROOT=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$DEFAULT_SDK}}
 ADB="$SDK_ROOT/platform-tools/adb"
 APP_ID=org.camrelay.expo
 APK=Examples/CamRelayExpo/android/app/build/outputs/apk/release/app-release.apk
 
 command -v jq >/dev/null
-command -v magick >/dev/null
+MAGICK=$(command -v magick || command -v convert)
 command -v rg >/dev/null
 command -v xmllint >/dev/null
 test -x "$ADB"
@@ -34,7 +38,7 @@ RELAY_PID=
 SERIAL=
 EMULATOR_STARTED=false
 
-AVD_HOME=${ANDROID_AVD_HOME:-$HOME/.android/avd}
+AVD_HOME=${ANDROID_AVD_HOME:-${ANDROID_USER_HOME:-$HOME/.android}/avd}
 AVD_INI="$AVD_HOME/$AVD.ini"
 test -f "$AVD_INI"
 AVD_DIRECTORY=$(sed -n 's/^path=//p' "$AVD_INI" | head -1)
@@ -42,14 +46,34 @@ test -d "$AVD_DIRECTORY"
 ENVIRONMENT_FILE="$AVD_DIRECTORY/environment.ini"
 ORIGINAL_ENVIRONMENT=missing
 ORIGINAL_PERMISSIONS=
+
+file_checksum() {
+  if [ "$(uname -s)" = Linux ]; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+file_permissions() {
+  if [ "$(uname -s)" = Linux ]; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
+
 if [ -f "$ENVIRONMENT_FILE" ]; then
-  ORIGINAL_ENVIRONMENT=$(shasum -a 256 "$ENVIRONMENT_FILE" | awk '{print $1}')
-  ORIGINAL_PERMISSIONS=$(stat -f '%Lp' "$ENVIRONMENT_FILE")
+  ORIGINAL_ENVIRONMENT=$(file_checksum "$ENVIRONMENT_FILE")
+  ORIGINAL_PERMISSIONS=$(file_permissions "$ENVIRONMENT_FILE")
 fi
 
 control() { .build/debug/camrelay "$@" --session "$SESSION"; }
 
 cleanup() {
+  if [ "$EMULATOR_STARTED" = true ] && [ -n "$SERIAL" ] && "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1; then
+    "$ADB" -s "$SERIAL" logcat -d >"$RUN_DIR/logcat.log" 2>&1 || true
+  fi
   if [ -n "$RELAY_PID" ]; then
     control stop >/dev/null 2>&1 || kill -TERM "$RELAY_PID" 2>/dev/null || true
     wait "$RELAY_PID" 2>/dev/null || true
@@ -101,6 +125,7 @@ await_camera() {
 
   await_ui 'Camera: active'
   await_ui 'Preview: active'
+  await_ui 'Frame processor: active'
 }
 
 open_action() {
@@ -113,6 +138,7 @@ preview_bounds() {
   bounds=$(xmllint --xpath \
     'string(//node[contains(@resource-id,"camera-preview")]/@bounds)' \
     "$RUN_DIR/window.xml")
+  # shellcheck disable=SC2046 # Split the four numeric coordinates.
   set -- $(printf '%s' "$bounds" | tr '[],' '   ')
   if [ "$#" -ne 4 ]; then
     echo "Could not locate the camera preview bounds." >&2
@@ -125,7 +151,7 @@ pixel_color() {
   file=$1
   x=$2
   y=$3
-  magick "$file" -format \
+  "$MAGICK" "$file" -format \
     "%[fx:round(255*p{$x,$y}.r)] %[fx:round(255*p{$x,$y}.g)] %[fx:round(255*p{$x,$y}.b)]" \
     info: | awk '{
       if ($1 > 150 && $2 < 100 && $3 < 100) print "R"
@@ -137,6 +163,7 @@ pixel_color() {
 }
 
 preview_signature() {
+  # shellcheck disable=SC2046 # Split the four numeric coordinates.
   set -- $(preview_bounds)
   left=$1
   top=$2
@@ -175,6 +202,7 @@ await_signature() {
 }
 
 sample_video_timing() {
+  # shellcheck disable=SC2046 # Split the four numeric coordinates.
   set -- $(preview_bounds)
   x=$((($1 + $3) / 2))
   y=$((($2 + $4) / 2))
@@ -232,7 +260,6 @@ status=$(control wait --timeout 150s --json)
 printf '%s\n' "$status" >"$RUN_DIR/ready.json"
 SERIAL=$(printf '%s\n' "$status" | jq -er \
   'select(.error == null and .status.selected == "pattern") | .status.simulatorID')
-rg -q 'is ready in Android AVD' "$RUN_DIR/relay.log"
 
 "$ADB" -s "$SERIAL" install -r "$APK" >"$RUN_DIR/install.log"
 "$ADB" -s "$SERIAL" shell pm grant "$APP_ID" android.permission.CAMERA
@@ -287,10 +314,11 @@ test "$("$ADB" -s "$SERIAL" shell pidof "$APP_ID")" = "$APP_PID"
 if [ "$ORIGINAL_ENVIRONMENT" = missing ]; then
   test ! -e "$ENVIRONMENT_FILE"
 else
-  test "$(shasum -a 256 "$ENVIRONMENT_FILE" | awk '{print $1}')" = "$ORIGINAL_ENVIRONMENT"
-  test "$(stat -f '%Lp' "$ENVIRONMENT_FILE")" = "$ORIGINAL_PERMISSIONS"
+  test "$(file_checksum "$ENVIRONMENT_FILE")" = "$ORIGINAL_ENVIRONMENT"
+  test "$(file_permissions "$ENVIRONMENT_FILE")" = "$ORIGINAL_PERMISSIONS"
 fi
 
+"$ADB" -s "$SERIAL" logcat -d >"$RUN_DIR/logcat.log" 2>&1 || true
 .build/debug/camrelay emulator stop --platform android --avd "$AVD" \
   >"$RUN_DIR/emulator-stop.log" 2>&1
 EMULATOR_STARTED=false

@@ -18,7 +18,11 @@ public struct AndroidSDK: Equatable, Sendable {
             }
         }
         if let home = environment["HOME"], !home.isEmpty {
+            #if os(Linux)
+            roots.append((home as NSString).appendingPathComponent("Android/Sdk"))
+            #else
             roots.append((home as NSString).appendingPathComponent("Library/Android/sdk"))
+            #endif
         }
 
         guard let root = roots.lazy.map({ URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) })

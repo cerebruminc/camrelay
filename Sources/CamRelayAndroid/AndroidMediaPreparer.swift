@@ -1,3 +1,4 @@
+#if os(macOS)
 import AVFoundation
 import CamRelayCore
 import CoreGraphics
@@ -322,3 +323,4 @@ private enum AndroidMediaPreparationError: LocalizedError {
         }
     }
 }
+#endif

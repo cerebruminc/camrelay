@@ -1,9 +1,13 @@
 @testable import CamRelayAndroid
 import CamRelayCore
+#if os(macOS)
 import CoreGraphics
 import CoreImage
-import Foundation
 import ImageIO
+#else
+import Glibc
+#endif
+import Foundation
 import Testing
 
 @Test("Finds the Android SDK and resolves an AVD directory")
@@ -13,8 +17,8 @@ func locatesSDKAndAVD() throws {
     let avdDirectory = try fixture.addAVD("Pixel_10")
 
     let sdk = try AndroidSDK(environment: fixture.environment)
-    #expect(sdk.rootURL == fixture.sdkRoot.standardizedFileURL)
-    #expect(try sdk.avdDirectory(named: "Pixel_10") == avdDirectory.standardizedFileURL)
+    #expect(sdk.rootURL.path == fixture.sdkRoot.standardizedFileURL.path)
+    #expect(try sdk.avdDirectory(named: "Pixel_10").path == avdDirectory.standardizedFileURL.path)
 }
 
 @Test("Selects the only AVD or requires an explicit choice")
@@ -44,6 +48,20 @@ func selectsAndroidAVD() throws {
     }
 }
 
+@Test("Finds the Android SDK in the host's default home directory")
+func locatesSDKFromHomeDirectory() throws {
+    #if os(Linux)
+    let fixture = try AndroidSDKFixture(sdkPath: "Android/Sdk")
+    #else
+    let fixture = try AndroidSDKFixture(sdkPath: "Library/Android/sdk")
+    #endif
+    defer { fixture.remove() }
+    var environment = fixture.environment
+    environment.removeValue(forKey: "ANDROID_SDK_ROOT")
+    let sdk = try AndroidSDK(environment: environment)
+    #expect(sdk.rootURL.path == fixture.sdkRoot.standardizedFileURL.path)
+}
+
 @Test("Parses private emulator discovery without weakening authentication")
 func parsesEmulatorDiscovery() {
     let endpoint = emulatorEndpoint(from: """
@@ -62,8 +80,11 @@ func discoversRunningAndroidAVD() throws {
     let fixture = try AndroidSDKFixture()
     defer { fixture.remove() }
     let avdDirectory = try fixture.addAVD("Test_AVD")
-    let runningDirectory = fixture.root
-        .appendingPathComponent("Library/Caches/TemporaryItems/avd/running")
+    #if os(Linux)
+    let runningDirectory = fixture.root.appendingPathComponent("runtime/avd/running")
+    #else
+    let runningDirectory = fixture.root.appendingPathComponent("Library/Caches/TemporaryItems/avd/running")
+    #endif
     try FileManager.default.createDirectory(at: runningDirectory, withIntermediateDirectories: true)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: runningDirectory.path)
     let discoveryURL = runningDirectory.appendingPathComponent("pid_\(getpid()).ini")
@@ -100,6 +121,36 @@ func countsMappedAndroidCameras() {
     #expect(mappedCameraDeviceCount(in: "Device 10 is closed") == 0)
 }
 
+@Test("Waits for Android boot after ADB is initially unavailable")
+func waitsForAndroidBootReadiness() throws {
+    let fixture = try AndroidSDKFixture()
+    defer { fixture.remove() }
+    let connection = try fixture.connection(adbScript: """
+    #!/bin/sh
+    count=0
+    if [ -f "$HOME/boot-attempts" ]; then read count < "$HOME/boot-attempts"; fi
+    count=$((count + 1))
+    printf '%s\\n' "$count" > "$HOME/boot-attempts"
+    if [ "$count" -eq 1 ]; then exit 1; fi
+    if [ "$count" -ge 3 ]; then printf '1\\n'; fi
+    """)
+
+    try connection.waitUntilBooted()
+
+    #expect(try String(contentsOf: fixture.root.appendingPathComponent("boot-attempts"), encoding: .utf8) == "3\n")
+}
+
+@Test("Reports emulator exit while waiting for Android boot")
+func detectsAndroidExitBeforeBoot() throws {
+    let fixture = try AndroidSDKFixture()
+    defer { fixture.remove() }
+    let connection = try fixture.connection(adbScript: "#!/bin/sh\nexit 1\n", processIdentifier: Int32.max)
+
+    #expect(throws: RelayError("Android AVD Test_AVD exited before Android finished booting.")) {
+        try connection.waitUntilBooted()
+    }
+}
+
 @Test("Encodes setEnvironment as a framed gRPC protobuf")
 func encodesEnvironmentRequest() {
     let request = grpcEnvironmentRequest(sceneMode: "imagefile:/x")
@@ -110,6 +161,28 @@ func encodesEnvironmentRequest() {
     #expect(request == expected)
     #expect(grpcStatus(in: "HTTP/2 200\r\ngrpc-status: 0\r\n") == 0)
     #expect(grpcStatus(in: "HTTP/2 200\r\n") == nil)
+}
+
+@Test("Waits for ADB disconnection after the Emulator removes its discovery file")
+func waitsForAndroidDisconnection() throws {
+    let fixture = try AndroidSDKFixture()
+    defer { fixture.remove() }
+    let connection = try fixture.connection(adbScript: """
+    #!/bin/sh
+    printf '%s\\n' "$3" >> "$HOME/shutdown-commands"
+    if [ "$3" = emu ]; then
+        mv "$HOME/discovery.ini" "$HOME/shutdown-discovery.ini"
+        printf connected > "$HOME/transport-state"
+        (sleep 0.2; printf disconnected > "$HOME/transport-state") >/dev/null 2>&1 &
+    elif [ "$3" = wait-for-disconnect ]; then
+        while [ "$(cat "$HOME/transport-state")" != disconnected ]; do sleep 0.01; done
+    fi
+    """)
+
+    try connection.stop()
+
+    #expect(try String(contentsOf: fixture.root.appendingPathComponent("transport-state"), encoding: .utf8) == "disconnected")
+    #expect(try String(contentsOf: fixture.root.appendingPathComponent("shutdown-commands"), encoding: .utf8) == "emu\nwait-for-disconnect\n")
 }
 
 @Test("Maps image and video fixtures to Android environment modes")
@@ -222,6 +295,44 @@ func defaultsMissingAVDEnvironment() throws {
     #expect(!FileManager.default.fileExists(atPath: environmentURL.path))
 }
 
+@Test("Restores the AVD environment contents and permissions after Emulator scene changes")
+func restoresAVDEnvironment() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("camrelay-android-environment-restore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("environment.ini")
+    let original = Data("# Idle scene\nscene.mode=none\ncustom.value=keep\n".utf8)
+    try original.write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    let environment = try AVDEnvironmentFile(avdDirectory: root)
+
+    try Data("scene.mode = imagefile:/temporary/image.png\n".utf8).write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+    try environment.restore()
+    try environment.restore()
+
+    #expect(try Data(contentsOf: url) == original)
+    #expect((try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+}
+
+@Test("Removes an Emulator-created environment file when none existed before the relay")
+func restoresMissingAVDEnvironment() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("camrelay-android-environment-missing-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("environment.ini")
+    let environment = try AVDEnvironmentFile(avdDirectory: root)
+
+    try Data("scene.mode = imagefile:/temporary/image.png\n".utf8).write(to: url)
+    try environment.restore()
+    try environment.restore()
+
+    #expect(!FileManager.default.fileExists(atPath: url.path))
+}
+
+#if os(macOS)
 @Test("Prepares the complete image inside the Android environment camera window")
 func preparesAndroidImageForFullFrame() throws {
     let root = FileManager.default.temporaryDirectory
@@ -262,6 +373,7 @@ func calculatesAndroidEnvironmentCameraWindow() {
         in: CGRect(x: 0, y: 0, width: 90, height: 120)
     ) == CGRect(x: 11.25, y: 0, width: 67.5, height: 120))
 }
+#endif
 
 private final class AndroidSDKFixture {
     let root: URL
@@ -269,10 +381,10 @@ private final class AndroidSDKFixture {
     let avdHome: URL
     let environment: [String: String]
 
-    init() throws {
+    init(sdkPath: String = "sdk") throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("camrelay-android-sdk-test-\(UUID().uuidString)")
-        sdkRoot = root.appendingPathComponent("sdk")
+        sdkRoot = root.appendingPathComponent(sdkPath)
         avdHome = root.appendingPathComponent("avd")
         try FileManager.default.createDirectory(
             at: sdkRoot.appendingPathComponent("emulator"), withIntermediateDirectories: true
@@ -292,6 +404,7 @@ private final class AndroidSDKFixture {
             "ANDROID_SDK_ROOT": sdkRoot.path,
             "ANDROID_AVD_HOME": avdHome.path,
             "HOME": root.path,
+            "XDG_RUNTIME_DIR": root.appendingPathComponent("runtime").path,
         ]
     }
 
@@ -303,11 +416,27 @@ private final class AndroidSDKFixture {
         return directory
     }
 
+    func connection(adbScript: String, processIdentifier: Int32 = getpid()) throws -> AndroidEmulatorConnection {
+        let adbURL = sdkRoot.appendingPathComponent("platform-tools/adb")
+        try Data(adbScript.utf8).write(to: adbURL)
+        let discoveryURL = root.appendingPathComponent("discovery.ini")
+        try Data().write(to: discoveryURL)
+        return AndroidEmulatorConnection(
+            device: AndroidVirtualDevice(id: "Test_AVD", directoryURL: try addAVD("Test_AVD")),
+            endpoint: EmulatorControlEndpoint(port: 55424, token: "test-token", serial: "emulator-5554"),
+            processIdentifier: processIdentifier,
+            discoveryURL: discoveryURL,
+            adbURL: adbURL,
+            environment: environment
+        )
+    }
+
     func remove() {
         try? FileManager.default.removeItem(at: root)
     }
 }
 
+#if os(macOS)
 private func writeSolidPNG(to url: URL, width: Int, height: Int) throws {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     guard let context = CGContext(
@@ -339,6 +468,7 @@ private func pixel(at point: CGPoint, in image: CIImage) -> [UInt8] {
     }
     return value
 }
+#endif
 
 private final class AndroidMediaFixture {
     let root: URL

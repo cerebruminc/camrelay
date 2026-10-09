@@ -2,6 +2,8 @@
 
 Examples in this document use an installed `camrelay` executable. For a source build, replace it with `.build/debug/camrelay`.
 
+Linux supports Android relays; pass `--platform android` when starting one. The default iOS relay requires macOS. Session control commands address the running relay on either host.
+
 ## Command forms
 
 ```text
@@ -62,7 +64,7 @@ camrelay emulator stop --platform android [--avd <name>]
 
 These commands currently support only Android. If `--avd` is omitted, CamRelay selects the AVD automatically only when exactly one is available.
 
-`emulator start` requires the selected AVD to be stopped and launches it with front and back environment cameras. `emulator stop` shuts down the selected AVD. Starting or stopping a relay does not start or stop the emulator.
+`emulator start` requires the selected AVD to be stopped and launches it with front and back environment cameras. `emulator stop` shuts down the selected AVD and waits for ADB to report its disconnection. Starting or stopping a relay does not start or stop the emulator.
 
 ## Control a relay
 

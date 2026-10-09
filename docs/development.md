@@ -12,6 +12,7 @@ This guide covers the repository structure, builds, and tests. See [Usage](usage
 | `Sources/CamRelayAndroid` | Android SDK and AVD discovery, emulator start and stop commands, media preparation, and Emulator control |
 | `Runtime/CamRelayRuntime` | Objective-C runtime injected into iOS Simulator apps |
 | `Examples/CamRelayProbe` | Native AVFoundation validation app |
+| `Examples/CamRelayAndroidProbe` | Native Camera2 frame validation app |
 | `Examples/CamRelayExpo` | Expo and VisionCamera validation app for both platforms |
 | `Tests` | Swift unit tests and deterministic fixture utilities |
 | `scripts` | Build and end-to-end validation scripts |
@@ -20,7 +21,7 @@ Shared code must remain buildable without importing Apple-only frameworks. Add a
 
 ## Build
 
-Build the iOS runtime and debug CLI:
+On macOS, build the iOS runtime and debug CLI:
 
 ```sh
 ./scripts/build-runtime.sh
@@ -32,7 +33,7 @@ Build an optimized CLI with `swift build -c release`.
 
 `scripts/build-runtime.sh` compiles the Objective-C runtime for arm64 and x86_64 iOS Simulator, combines the slices into `.build/runtime/CamRelayRuntime.dylib`, verifies both architectures, and applies an ad hoc signature.
 
-The Swift package targets macOS 14 or newer with Swift 6.2. Platform-specific Apple frameworks remain outside `CamRelayCore`.
+The Swift package requires Swift 6.2 and supports macOS 14 or newer and Linux. On Linux, `swift build` produces the Android CLI without the iOS Simulator implementation. Install FFmpeg for Linux media preparation and an HTTP/2-enabled `curl` for Emulator control; see [Android requirements](android.md#requirements). Platform-specific Apple frameworks remain outside `CamRelayCore`.
 
 ## Unit tests
 
@@ -48,7 +49,9 @@ Run the complete Swift test suite when shared behavior or interfaces may be affe
 swift test
 ```
 
-`unit-tests.yml` runs on every pull request, on pushes to `master`, and by manual dispatch. It runs the full Swift suite on Apple Silicon and Intel macOS, and Expo type checking plus JavaScript tests on Ubuntu 24.04 with Node.js 22. Mac jobs select Xcode 26.2 on `macos-15` (arm64) and `macos-15-intel` (x86_64). Actions use version tags.
+`unit-tests.yml` runs on every pull request and by manual dispatch. It runs the full Swift suite on Apple Silicon and Intel macOS, the portable and Android Swift tests on Ubuntu 24.04 x86_64 with Swift 6.2.1 and FFmpeg, and Expo type checking plus JavaScript tests with Node.js 22. Mac jobs select Xcode 26.2 on `macos-15` (arm64) and `macos-15-intel` (x86_64). Actions use version tags.
+
+Linux tests exercise FFmpeg image fitting, rotated-video pixels, cadence and duration, caching, failed preparation, and temporary-media cleanup. Linux FFmpeg and SDK commands capture output in private temporary files and wait for their own child process, avoiding interrupted Foundation pipe reads. Command tests verify that a background ADB daemon does not block command completion, large diagnostics do not stall stdout, and arguments and errors are preserved. Simulator-specific Swift tests run only on macOS.
 
 The workflow uses read-only repository permissions and `pull_request`, including fork PRs. Older runs for the same PR or ref are cancelled. Configure branch protection for the desired unit-test job checks.
 
@@ -63,6 +66,8 @@ Generate local image and video fixtures:
 ```
 
 Outputs are written to `.build/fixtures`. They include solid colors, a changing-color video, a checkerboard, moving shapes, and image/video orientation patterns. Generated media is disposable and must not be committed.
+
+For Android tests on macOS or Linux, `python3 scripts/generate-android-fixtures.py` generates only the checkerboard, color-cycle video, and image/video orientation fixtures required by the Android validator. It requires FFmpeg and Python 3 and writes to the same directory.
 
 ## Native iOS probe
 
@@ -114,6 +119,32 @@ python3 scripts/validate-terminal.py
 
 Validation logs remain under `.build/validation`.
 
+## Native Android probe
+
+`CamRelayAndroidProbe` consumes frames through standard Camera2 and `ImageReader` APIs. It does not import or link CamRelay, or know fixture names. Build it with JDK 17 or newer and Android SDK packages `platforms;android-35` and `build-tools;36.0.0`:
+
+```sh
+sh scripts/build-android-probe.sh
+```
+
+The script uses `javac`, `d8`, and Android packaging tools to produce `.build/android-probe/CamRelayAndroidProbe.apk`. It requires no Gradle, npm, Expo, or React Native dependencies. Its local debug signing key stays under `.build` and must not be committed or uploaded.
+
+For a basic camera delivery check on a dedicated, stopped AVD:
+
+```sh
+swift build
+python3 scripts/generate-android-fixtures.py
+python3 scripts/validate-android-probe.py your_avd_name
+```
+
+For a newly created AVD, initialize its `environment.ini` with `scene.mode=none` before booting it. Emulator 36.6.11 cannot reload an environment file it did not load at startup. CI creates this file for its dedicated AVD; validation preserves its contents and permissions.
+
+The validator wakes the dedicated AVD and dismisses its keyguard before opening the probe. It checks image pixels on both cameras, video color changes and looping, camera and fixture switching, failed-selection preservation, app/AVD continuity after relay shutdown, and unchanged AVD configuration. It logs each stage and shuts down its AVD afterward. It does not check UI preview, photo capture, orientation, exact source cadence, or VisionCamera compatibility; use the Expo validator below for those scenarios.
+
+Android integration CI uses this probe on Linux. Manual dispatch accepts `platform: android`, `ios`, or `all`. Automatic integration runs for both platforms trigger only on pushes to `release-please--branches--master`, including when release-please creates or updates its PR. Ordinary pull requests do not create integration workflow runs. Execution timeouts are configured in the workflow: the probe build has a 5-minute limit and the complete Android job has a 60-minute limit. Validation has no separate step timeout or internal execution timeouts. Logs remain under `.build/validation` and are uploaded even on failure.
+
+On a headless Linux host, configure the private runtime directory and hardware acceleration as described below, then use `xvfb-run -a python3 scripts/validate-android-probe.py your_avd_name`.
+
 ## Expo VisionCamera example
 
 The [CamRelay Expo example](../Examples/CamRelayExpo/README.md) validates front/back discovery, live preview, frame-processor delivery, camera switching, and photo capture through `react-native-vision-camera`.
@@ -131,14 +162,16 @@ The example requires a native development build; it does not run in Expo Go.
 For Android Emulator tests:
 
 ```sh
-./scripts/generate-fixtures.sh
+python3 scripts/generate-android-fixtures.py
 swift build
 npm --prefix Examples/CamRelayExpo run android:validation-build
 AVD_NAME=your_avd_name
 ./scripts/validate-android.sh "$AVD_NAME"
 ```
 
-The script requires `adb`, `jq`, ImageMagick's `magick`, `rg`, and `xmllint`. It checks front/back preview, photo capture, image and video orientation, source cadence and looping, live fixture switching, failed-selection preservation, app and AVD continuity after relay shutdown, unchanged AVD configuration, and explicit AVD cleanup.
+The script requires `adb`, `jq`, ImageMagick's `magick` or `convert`, `rg`, and `xmllint`. It checks front/back preview, photo capture, image and video orientation, source cadence and looping, live fixture switching, failed-selection preservation, app and AVD continuity after relay shutdown, unchanged AVD configuration, and explicit AVD cleanup.
+
+On a headless Linux host, provide a private `XDG_RUNTIME_DIR`, configure hardware acceleration, and run the validator with `xvfb-run -a sh scripts/validate-android.sh "$AVD_NAME"`. The CI job sets these up for its dedicated AVD.
 
 ## What to test
 

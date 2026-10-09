@@ -60,9 +60,8 @@ struct AndroidEmulatorConnection: Sendable {
             && androidProcessIsRunning(processIdentifier)
     }
 
-    func waitUntilBooted(timeout: TimeInterval = 120) throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        repeat {
+    func waitUntilBooted() throws {
+        while true {
             if let output = try? runAndroidCommand(
                 adbURL,
                 arguments: ["-s", endpoint.serial, "shell", "getprop", "sys.boot_completed"],
@@ -74,8 +73,7 @@ struct AndroidEmulatorConnection: Sendable {
                 throw RelayError("Android AVD \(device.id) exited before Android finished booting.")
             }
             Thread.sleep(forTimeInterval: 0.25)
-        } while Date() < deadline
-        throw RelayError("Timed out waiting for Android AVD \(device.id) to boot.")
+        }
     }
 
     func waitUntilEnvironmentCamerasAvailable(timeout: TimeInterval = 30) throws {
@@ -105,6 +103,11 @@ struct AndroidEmulatorConnection: Sendable {
         _ = try runAndroidCommand(
             adbURL,
             arguments: ["-s", endpoint.serial, "emu", "kill"],
+            environment: environment
+        )
+        _ = try runAndroidCommand(
+            adbURL,
+            arguments: ["-s", endpoint.serial, "wait-for-disconnect"],
             environment: environment
         )
         let deadline = Date().addingTimeInterval(timeout)
@@ -230,12 +233,28 @@ public struct AndroidEmulatorController: Sendable {
     }
 
     private func discoveryDirectory() throws -> URL {
+        #if os(Linux)
+        var candidates = [environment["XDG_RUNTIME_DIR"], "/run/user/\(getuid())"]
+        candidates += ["ANDROID_EMULATOR_HOME", "ANDROID_PREFS_ROOT", "ANDROID_SDK_HOME"].map { environment[$0] }
+        if let home = environment["HOME"], !home.isEmpty {
+            candidates.append((home as NSString).appendingPathComponent(".android"))
+        }
+        guard let directory = candidates.compactMap({ $0 }).first(where: { path in
+            var isDirectory: ObjCBool = false
+            return !path.isEmpty && FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                && isDirectory.boolValue && FileManager.default.isWritableFile(atPath: path)
+        }) else {
+            throw RelayError("Android Emulator runtime directory not found. Set XDG_RUNTIME_DIR to a writable directory owned by the current user.")
+        }
+        return URL(fileURLWithPath: directory).appendingPathComponent("avd/running").standardizedFileURL
+        #else
         guard let home = environment["HOME"], !home.isEmpty else {
             throw RelayError("HOME is required to locate Android Emulator control information.")
         }
         return URL(fileURLWithPath: home)
             .appendingPathComponent("Library/Caches/TemporaryItems/avd/running")
             .standardizedFileURL
+        #endif
     }
 }
 
@@ -426,11 +445,14 @@ func mappedCameraDeviceCount(in cameraServiceDump: String) -> Int {
     }
 }
 
-private func runAndroidCommand(
+func runAndroidCommand(
     _ executableURL: URL,
     arguments: [String],
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) throws -> Data {
+    #if os(Linux)
+    return try runLinuxAndroidCommand(executableURL, arguments: arguments, environment: environment)
+    #else
     let process = Process()
     let output = Pipe()
     let errorOutput = Pipe()
@@ -449,4 +471,5 @@ private func runAndroidCommand(
         throw RelayError("\(executableURL.lastPathComponent) failed: \(message.isEmpty ? "exit status \(process.terminationStatus)" : message)")
     }
     return outputData
+    #endif
 }

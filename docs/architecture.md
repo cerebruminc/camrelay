@@ -42,14 +42,17 @@ On iOS, CamRelay controls frame timing and sends decoded pixels to each app runt
 | Component | Runs in | Responsibility |
 | --- | --- | --- |
 | `CamRelayCore` | Portable Swift | Fixture and command models, validation, control messages, leases, and the playback clock |
-| `CamRelayCLI` | macOS | Argument parsing, startup and shutdown, terminal input, signals, status, and errors |
+| `CamRelayCLI` | macOS or Linux | Argument parsing, startup and shutdown, terminal input, signals, status, and errors |
 | `CamRelayIOS` | macOS | Simulator selection, media decoding, playback, frame transport, and Simulator activation |
-| `CamRelayAndroid` | macOS | SDK and AVD discovery, emulator start and stop commands, media preparation, and authenticated control |
+| `CamRelayAndroid` | macOS or Linux | SDK and AVD discovery, emulator start and stop commands, media preparation, and authenticated control |
 | `CamRelayRuntime` | iOS Simulator app | Synthetic AVFoundation objects and camera sample delivery |
 | `CamRelayProbe` | iOS Simulator app | Independent validation through standard AVFoundation APIs |
+| `CamRelayAndroidProbe` | Android Emulator app | Independent frame validation through standard Camera2 APIs |
 | `CamRelayExpo` | iOS Simulator or Android Emulator | Validation through Expo and `react-native-vision-camera` |
 
 The Swift package builds the four Swift targets. Shell scripts build the iOS runtime and native probe because those artifacts target iOS Simulator rather than the package's macOS platform.
+
+On Linux, the `CamRelayIOS` target builds only the shared session-control socket; its Simulator, decoding, and frame-delivery sources and tests are excluded. The Android media preparer uses FFmpeg there, while macOS keeps the Apple-framework implementation. The Linux CLI reports an error if asked to run an iOS relay.
 
 ## Session control
 
@@ -146,11 +149,11 @@ For each incoming frame, the runtime creates a `CVPixelBuffer`, format descripti
 
 `emulator start` launches a stopped AVD with both cameras set to `environment` and requests an ephemeral, token-protected gRPC endpoint. The Emulator publishes its serial, endpoint, token, AVD identifier, and process information in a private discovery file.
 
-A relay selects the intended AVD, validates that its CamRelay-started Emulator is still running, and reads the idle scene from `environment.ini` without changing that file. Media preparation creates temporary image or video copies that preserve orientation and fit the environment-camera viewport.
+A relay selects the intended AVD, validates that its CamRelay-started Emulator is still running, and records the idle scene, file contents, and permissions from `environment.ini`. Media preparation creates temporary image or video copies that preserve orientation and fit the environment-camera viewport.
 
 Fixture changes send authenticated `setEnvironment` requests to the localhost endpoint. Android playback state is committed only after the request succeeds. The Emulator owns frame timing and looping, so Android does not use CRF3, source-clock pause, or delivery acknowledgements.
 
-Stopping the relay restores the recorded idle scene and removes temporary media. The `emulator stop` command shuts down the AVD.
+Stopping the relay restores the recorded idle scene, restores the original `environment.ini` contents and permissions after the Emulator's scene updates, and removes temporary media. The `emulator stop` command shuts down the AVD.
 
 ## Concurrency and isolation
 
