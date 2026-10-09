@@ -33,6 +33,21 @@ jobs:
       - name: Run Swift tests
         run: swift test
 
+  linux:
+    name: Swift (Linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2.4.0
+        with:
+          swift-version: '6.2.1'
+      - name: Install media tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: swift test
+
   expo:
     name: Expo
     runs-on: ubuntu-24.04

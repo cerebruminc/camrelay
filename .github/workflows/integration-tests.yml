@@ -1,19 +1,28 @@
 name: Integration tests
 
 on:
-  pull_request:
+  push:
+    branches: [release-please--branches--master]
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to validate
+        type: choice
+        options: [all, android, ios]
+        default: all
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: integration-tests-${{ github.event.pull_request.number || github.ref }}
+  group: integration-tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   ios:
     name: iOS (${{ matrix.architecture }})
+    if: github.event_name == 'push' || inputs.platform != 'android'
     strategy:
       fail-fast: false
       matrix:
@@ -87,3 +96,93 @@ jobs:
         env:
           DEVICE: ${{ steps.simulator.outputs.device }}
         run: xcrun simctl shutdown "$DEVICE"
+
+  android:
+    name: Android (Linux x86_64)
+    if: github.event_name == 'push' || inputs.platform != 'ios'
+    runs-on: ${{ format('runs-on={0}/family=c8i.2xlarge/image=ubuntu24-full-x64/nested-virt', github.run_id) }}
+    timeout-minutes: 60
+    env:
+      CI: 'true'
+      AVD_NAME: CamRelay_CI
+      SYSTEM_IMAGE: system-images;android-35;google_apis;x86_64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: swift-actions/setup-swift@v2.4.0
+        with:
+          swift-version: '6.2.1'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Create validation log directory
+        run: mkdir -p .build/validation
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl xvfb acl libpulse0 libxcb-cursor0 libxkbcommon-x11-0
+          /usr/bin/curl --version | grep -q HTTP2
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager 'platform-tools' 'emulator' 'platforms;android-35' 'build-tools;36.0.0' "$SYSTEM_IMAGE"
+          "$ANDROID_HOME/emulator/emulator" -version
+      - name: Create a dedicated Android AVD
+        run: |
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/camrelay-avd"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/camrelay-android-runtime"
+          install -d -m 700 "$ANDROID_AVD_HOME" "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/avd/running"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          printf 'no\n' | avdmanager create avd --name "$AVD_NAME" --package "$SYSTEM_IMAGE" --device pixel_6
+          sed -i -e '/^hw.gpu.enabled=/d' -e '/^hw.gpu.mode=/d' -e '/^hw.ramSize=/d' "$ANDROID_AVD_HOME/$AVD_NAME.avd/config.ini"
+          cat >> "$ANDROID_AVD_HOME/$AVD_NAME.avd/config.ini" <<'CONFIG'
+          hw.gpu.enabled=yes
+          hw.gpu.mode=swiftshader
+          hw.ramSize=2048
+          CONFIG
+          # The Emulator must load this file at startup to accept later scene changes.
+          printf 'scene.mode=none\n' > "$ANDROID_AVD_HOME/$AVD_NAME.avd/environment.ini"
+          chmod 600 "$ANDROID_AVD_HOME/$AVD_NAME.avd/environment.ini"
+      - name: Enable hardware acceleration
+        run: |
+          test -c /dev/kvm
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+      - name: Build the CLI and Android fixtures
+        run: |
+          {
+            swift build
+            python3 scripts/generate-android-fixtures.py
+          } 2>&1 | tee .build/validation/android-build.log
+      - name: Build the native Android probe
+        timeout-minutes: 5
+        run: |
+          sh scripts/build-android-probe.sh 2>&1 | tee .build/validation/android-probe-build.log
+      - name: Validate Android camera delivery and cleanup
+        run: xvfb-run -a python3 scripts/validate-android-probe.py "$AVD_NAME" 2>&1 | tee .build/validation/android-e2e.log
+      - name: Shut down the CI Android AVD
+        if: always()
+        run: |
+          if [ -x .build/debug/camrelay ] && [ -f "${ANDROID_AVD_HOME:-$HOME/.android/avd}/$AVD_NAME.ini" ]; then
+            timeout --kill-after=5s 30s .build/debug/camrelay emulator stop --platform android --avd "$AVD_NAME" || true
+          fi
+      - name: Upload validation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-validation-linux-x86_64
+          path: .build/validation
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

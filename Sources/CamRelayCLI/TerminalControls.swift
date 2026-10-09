@@ -1,7 +1,11 @@
 import CamRelayAndroid
 import CamRelayCore
 import CamRelayIOS
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 import Foundation
 
 protocol RelaySessionControl: AnyObject, Sendable {
@@ -9,7 +13,9 @@ protocol RelaySessionControl: AnyObject, Sendable {
     func handle(_ request: RelayControlRequest) async -> RelayControlResponse
 }
 
+#if os(macOS)
 extension IOSRelaySession: RelaySessionControl {}
+#endif
 extension AndroidRelaySession: RelaySessionControl {}
 
 final class TerminalControls: @unchecked Sendable {

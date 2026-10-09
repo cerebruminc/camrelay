@@ -1,5 +1,11 @@
 import CamRelayCore
+#if canImport(Darwin)
 import Darwin
+private let streamSocketType = SOCK_STREAM
+#else
+import Glibc
+private let streamSocketType = Int32(SOCK_STREAM.rawValue)
+#endif
 import Foundation
 
 enum ControlPaths {
@@ -42,11 +48,11 @@ public final class LocalControlServer: @unchecked Sendable {
         } else if errno != ENOENT {
             throw systemError("inspect control socket")
         }
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, streamSocketType, 0)
         guard fd >= 0 else { throw systemError("create control socket") }
         do {
             try withUnixAddress(path) { address, length in
-                guard Darwin.bind(fd, address, length) == 0 else { throw systemError("bind control socket") }
+                guard bind(fd, address, length) == 0 else { throw systemError("bind control socket") }
             }
         } catch {
             close(fd)
@@ -116,8 +122,8 @@ public final class LocalControlServer: @unchecked Sendable {
         let shouldStop = lock.withLock {
             guard !stopped else { return false }
             stopped = true
-            shutdown(listener, SHUT_RDWR)
-            for fd in clients { shutdown(fd, SHUT_RDWR) }
+            shutdown(listener, Int32(SHUT_RDWR))
+            for fd in clients { shutdown(fd, Int32(SHUT_RDWR)) }
             return true
         }
         guard shouldStop else { return }
@@ -147,7 +153,7 @@ public enum RelayControlClient {
     }
 
     private static func transact(_ request: RelayControlRequest, path: String) throws -> RelayControlResponse {
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, streamSocketType, 0)
         guard fd >= 0 else { throw systemError("create control connection") }
         defer { close(fd) }
         configureSocket(fd, timeout: request.timeout + 2)
@@ -166,12 +172,14 @@ private func withUnixAddress<T>(
 ) throws -> T {
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
+    #if canImport(Darwin)
     address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+    #endif
     let capacity = MemoryLayout.size(ofValue: address.sun_path)
     guard path.utf8.count < capacity else { throw RelayError("Control socket path is too long.") }
     withUnsafeMutablePointer(to: &address.sun_path) { pointer in
         pointer.withMemoryRebound(to: CChar.self, capacity: capacity) { destination in
-            path.withCString { source in _ = strlcpy(destination, source, capacity) }
+            path.withCString { source in destination.update(from: source, count: path.utf8.count + 1) }
         }
     }
     return try withUnsafePointer(to: &address) { pointer in
@@ -182,9 +190,11 @@ private func withUnixAddress<T>(
 }
 
 private func configureSocket(_ fd: Int32, timeout: Double) {
+    #if canImport(Darwin)
     var noSigPipe: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout.size(ofValue: noSigPipe)))
-    var value = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - floor(timeout)) * 1_000_000))
+    #endif
+    var value = timeval(tv_sec: Int(timeout), tv_usec: suseconds_t((timeout - floor(timeout)) * 1_000_000))
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value, socklen_t(MemoryLayout.size(ofValue: value)))
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, socklen_t(MemoryLayout.size(ofValue: value)))
 }
@@ -196,7 +206,12 @@ private func writeMessage(_ data: Data, to fd: Int32) throws {
     try (prefix + data).withUnsafeBytes { bytes in
         var offset = 0
         while offset < bytes.count {
-            let count = Darwin.send(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset, 0)
+            #if canImport(Darwin)
+            let flags: Int32 = 0
+            #else
+            let flags = Int32(MSG_NOSIGNAL)
+            #endif
+            let count = send(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset, flags)
             if count < 0 && errno == EINTR { continue }
             guard count > 0 else { throw systemError("write control message") }
             offset += count

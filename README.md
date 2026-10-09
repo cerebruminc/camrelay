@@ -10,6 +10,8 @@ The app under test does not need CamRelay code, imports, SDK integration, or spe
 
 ## Quick start
 
+Build with Swift 6.2 or newer on macOS or Linux. iOS Simulator support requires macOS; Linux supports Android relays with FFmpeg. See [Android requirements](docs/android.md#requirements) for dependencies and SDK setup.
+
 Build the CLI from the repository root:
 
 ```sh
@@ -28,7 +30,11 @@ Launch or relaunch the app after the relay is ready. Stop the relay with Ctrl-C.
 For Android, list the available Android Virtual Devices and choose one of the printed names:
 
 ```sh
-CAMRELAY_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+CAMRELAY_DEFAULT_SDK="$HOME/Library/Android/sdk"
+if [ "$(uname -s)" = Linux ]; then
+  CAMRELAY_DEFAULT_SDK="$HOME/Android/Sdk"
+fi
+CAMRELAY_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$CAMRELAY_DEFAULT_SDK}}"
 "$CAMRELAY_SDK/emulator/emulator" -list-avds
 
 AVD_NAME=your_avd_name
