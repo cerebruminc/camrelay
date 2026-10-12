@@ -35,6 +35,26 @@ Build an optimized CLI with `swift build -c release`.
 
 The Swift package requires Swift 6.2 and supports macOS 14 or newer and Linux. On Linux, `swift build` produces the Android CLI without the iOS Simulator implementation. Install FFmpeg for Linux media preparation and an HTTP/2-enabled `curl` for Emulator control; see [Android requirements](android.md#requirements). Platform-specific Apple frameworks remain outside `CamRelayCore`.
 
+## Release packages
+
+`cli-release.yml` runs when a release is published, or by manual dispatch with an existing published tag. It resolves the tag to one commit, then builds macOS arm64, macOS x86_64, and Ubuntu 24.04 x86_64 packages from that commit. macOS jobs use Xcode 26.2; Linux uses Swift 6.2.1 with `--static-swift-stdlib`. Actions use version tags. Only the asset-publishing job has write permissions.
+
+Pull requests that change Swift sources, the Simulator runtime, the package manifest or lockfile, `VERSION`, or release packaging scripts and workflow run the same build matrix before merging. These runs build the PR merge commit using the version in `VERSION`, verify each package and checksum, and save the archives and checksums as Actions artifacts for seven days. They do not require a release or publish assets. New commits cancel older package-validation runs for the same PR.
+
+Build a package locally using the version in the current checkout:
+
+```sh
+sh scripts/package-release.sh "v$(cat VERSION)"
+```
+
+On macOS, supply `arm64` or `x86_64` as the second argument to build that host architecture. The script bundles the universal Simulator runtime with a relocatable install name and applies ad hoc signatures. Linux packaging requires an x86_64 host and omits the Simulator runtime. Archives and per-archive checksums are written to `.build/release-assets`.
+
+Linux package verification uses `file`, `ldd`, and `sha256sum`. Install `file` in a minimal build container if it is missing; it checks the executable's ELF architecture and is not required to run the installed CLI.
+
+`scripts/verify-release-package.sh` extracts the archive to a temporary directory and runs `--version` and `--help` through `PATH` outside the checkout. It checks the binary architecture, macOS runtime slices and signatures, and the absence of shared Swift dependencies on Linux. The publishing job combines all three checksums into `SHA256SUMS` and verifies them before attaching the archives to the existing release. Manual retries replace assets with matching names.
+
+See [Installation](installation.md) for the archive layout, host dependencies, and a pinned-release QA example.
+
 ## Unit tests
 
 Run the smallest filtered test that covers a change first:

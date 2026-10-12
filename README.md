@@ -10,6 +10,8 @@ The app under test does not need CamRelay code, imports, SDK integration, or spe
 
 ## Quick start
 
+For a prebuilt CLI, see [Installation](docs/installation.md), including checksum verification and a pinned-release example for another QA repository.
+
 Build with Swift 6.2 or newer on macOS or Linux. iOS Simulator support requires macOS; Linux supports Android relays with FFmpeg. See [Android requirements](docs/android.md#requirements) for dependencies and SDK setup.
 
 Build the CLI from the repository root:
@@ -58,6 +60,7 @@ Stopping an Android relay leaves the emulator and app running. Use `emulator sto
 
 ## Documentation
 
+- [Installation](docs/installation.md): install release packages on macOS or Linux and use a pinned version in QA.
 - [Usage](docs/usage.md): build and run CamRelay, switch fixtures, and use it from CI.
 - [CLI reference](docs/cli.md): commands, options, status output, and exit codes.
 - [iOS Simulator](docs/ios.md): activation, camera compatibility, and platform limitations.

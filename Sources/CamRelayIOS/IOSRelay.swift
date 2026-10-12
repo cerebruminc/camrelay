@@ -230,8 +230,20 @@ private func prepareFixture(_ fixture: NamedFixture) async throws -> PreparedFix
     }
 }
 
-private struct RuntimeLocator {
+struct RuntimeLocator {
     let environment: [String: String]
+    let executableURL: URL
+    let workingDirectoryURL: URL
+
+    init(
+        environment: [String: String],
+        executableURL: URL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]),
+        workingDirectoryURL: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    ) {
+        self.environment = environment
+        self.executableURL = executableURL
+        self.workingDirectoryURL = workingDirectoryURL
+    }
 
     func runtimeURL() throws -> URL {
         let fileManager = FileManager.default
@@ -240,10 +252,10 @@ private struct RuntimeLocator {
             candidates.append(URL(fileURLWithPath: NSString(string: override).expandingTildeInPath))
         }
         candidates.append(
-            URL(fileURLWithPath: fileManager.currentDirectoryPath)
+            workingDirectoryURL
                 .appending(path: ".build/runtime/CamRelayRuntime.dylib")
         )
-        let executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        let executableURL = executableURL.resolvingSymlinksInPath()
         candidates.append(executableURL.deletingLastPathComponent().appending(path: "CamRelayRuntime.dylib"))
         candidates.append(executableURL.deletingLastPathComponent().appending(path: "../runtime/CamRelayRuntime.dylib"))
 
@@ -260,7 +272,7 @@ enum IOSRelayError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .runtimeNotFound:
-            "CamRelayRuntime.dylib was not found. Run ./scripts/build-runtime.sh before using a development build."
+            "CamRelayRuntime.dylib was not found. Keep the release package's bin and runtime directories together, set CAMRELAY_RUNTIME_PATH, or run ./scripts/build-runtime.sh for a source build."
         }
     }
 }

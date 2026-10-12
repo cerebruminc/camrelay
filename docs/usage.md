@@ -2,6 +2,8 @@
 
 Use this guide to build CamRelay, run fixtures, and control a session. The [CLI reference](cli.md) lists every command and option.
 
+For a prebuilt CLI, follow [Installation](installation.md). Use the installed `camrelay` command in place of `.build/debug/camrelay` in this guide.
+
 ## Build from source
 
 CamRelay requires Swift 6.2 or newer. It supports macOS 14 or newer for iOS and Android, and Linux for Android. Linux preparation requires FFmpeg; see [Android requirements](android.md#requirements). The Linux CI target is Ubuntu 24.04.

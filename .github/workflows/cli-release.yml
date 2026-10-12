@@ -1,0 +1,151 @@
+name: CLI release binaries
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cli-release.yml'
+      - 'Package.swift'
+      - 'Package.resolved'
+      - 'VERSION'
+      - 'Sources/**'
+      - 'Runtime/**'
+      - 'scripts/build-runtime.sh'
+      - 'scripts/package-release.sh'
+      - 'scripts/verify-release-package.sh'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published release tag to build or retry
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-release-${{ github.event.pull_request.number || inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+
+jobs:
+  source:
+    name: Resolve package source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: Check the published release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Expected a version tag such as v0.1.0."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release.json"
+          jq -e '.draft == false and .published_at != null' "$RUNNER_TEMP/release.json" > /dev/null
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || format('refs/tags/{0}', env.RELEASE_TAG) }}
+          persist-credentials: false
+      - name: Record the package source
+        id: source
+        run: |
+          VERSION_TAG="v$(cat VERSION)"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            RELEASE_TAG="$VERSION_TAG"
+          fi
+          test "$RELEASE_TAG" = "$VERSION_TAG"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }} ${{ matrix.architecture }}
+    needs: source
+    env:
+      RELEASE_TAG: ${{ needs.source.outputs.tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos
+            architecture: arm64
+          - runner: macos-15-intel
+            platform: macos
+            architecture: x86_64
+          - runner: ubuntu-24.04
+            platform: linux
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+      - name: Select Xcode
+        if: runner.os == 'macOS'
+        run: echo "DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer" >> "$GITHUB_ENV"
+      - uses: swift-actions/setup-swift@v2.4.0
+        if: runner.os == 'Linux'
+        with:
+          swift-version: '6.2.1'
+      - name: Install package inspection tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y file
+      - name: Build and verify the archive
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          sh scripts/package-release.sh "$RELEASE_TAG" "$ARCHITECTURE"
+          cd .build/release-assets
+          if [ "$RUNNER_OS" = macOS ]; then
+            shasum -a 256 --check ./*.sha256
+          else
+            sha256sum --check ./*.sha256
+          fi
+      - name: Save the verified archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.platform }}-${{ matrix.architecture }}
+          path: |
+            .build/release-assets/*.tar.gz
+            .build/release-assets/*.sha256
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  publish:
+    name: Attach release assets
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    needs: [source, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
+      - name: Verify checksums and attach assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: release-assets
+        run: |
+          for target in macos-arm64 macos-x86_64 linux-x86_64; do
+            test -f "camrelay-$RELEASE_TAG-$target.tar.gz"
+            test -f "camrelay-$RELEASE_TAG-$target.tar.gz.sha256"
+          done
+          cat ./*.sha256 | LC_ALL=C sort > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          gh release upload "$RELEASE_TAG" ./*.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
