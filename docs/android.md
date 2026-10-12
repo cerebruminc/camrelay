@@ -4,7 +4,7 @@ On Android, CamRelay controls the front and back environment cameras of an Andro
 
 ## Requirements
 
-- A macOS or Linux source build of CamRelay
+- A macOS or Linux CamRelay [release package](installation.md), or a source build
 - An Android SDK containing `emulator/emulator` and `platform-tools/adb`
 - At least one Android Virtual Device
 - On Linux, FFmpeg (`ffmpeg`, `ffprobe`, and the `libx264` encoder) and an HTTP/2-enabled `/usr/bin/curl`

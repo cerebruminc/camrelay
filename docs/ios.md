@@ -5,11 +5,11 @@ On iOS, CamRelay exposes synthetic front and back cameras to apps running in one
 ## Requirements
 
 - macOS 14 or newer
-- Swift 6.2 or newer
-- Xcode with an iOS Simulator runtime
+- Swift 6.2 or newer when building from source
+- Xcode with an iOS 18 or newer Simulator runtime
 - Exactly one booted Simulator when starting a relay
 
-The host CLI is currently built and tested on Apple Silicon. The injected runtime contains arm64 and x86_64 Simulator slices. Running an x86_64 Simulator app on Apple Silicon requires the macOS translation component.
+The [release packages](installation.md) provide separate Apple Silicon and Intel host CLIs. The injected runtime contains arm64 and x86_64 Simulator slices. Running an x86_64 Simulator app on Apple Silicon requires the macOS translation component.
 
 ## Build
 
